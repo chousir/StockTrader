@@ -1,4 +1,4 @@
-"""Page 4：回測結果 - 資金曲線、績效指標、交易明細"""
+"""Page 4：回測結果 - 三層佈局（策略摘要 / 資金曲線 / 卡片指標+交易明細）"""
 
 import sys
 
@@ -34,9 +34,33 @@ def _run_backtest(stock_id: str, start_date: str, end_date: str,
     return report, df
 
 
-def main():
-    st.title("📊 回測結果")
+def _render_equity_curve(report: dict, height: int = 450):
+    import plotly.graph_objects as go
+    import pandas as pd
+    from twquant.dashboard.styles.theme import TWStockColors
 
+    equity = pd.Series(report["equity_curve"])
+    equity.index = pd.to_datetime(equity.index)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=equity.index, y=equity.values,
+        name="策略",
+        line=dict(color=TWStockColors.EQUITY_CURVE, width=2),
+        fill="tozeroy",
+        fillcolor="rgba(0, 212, 170, 0.1)",
+    ))
+    fig.update_layout(
+        height=height,
+        margin=dict(l=40, r=20, t=30, b=20),
+        hovermode="x unified",
+        xaxis_title="日期",
+        yaxis_title="資產淨值",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def main():
     with st.sidebar:
         st.header("回測設定")
         stock_id = st.text_input("股票代碼", value="2330")
@@ -56,30 +80,39 @@ def main():
             stock_id, str(start), str(end), short_w, long_w
         )
 
-    # ── 績效指標卡片 ──
-    st.subheader("績效指標")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("累積報酬率", f"{report['total_return']:.2%}")
-    c2.metric("最大回撤", f"{report['max_drawdown']:.2%}")
-    c3.metric("夏普率", f"{report['sharpe_ratio']:.2f}")
-    c4.metric("勝率", f"{report['win_rate']:.2%}")
+    # ── Layer 1：策略摘要 ──
+    strategy_name = f"MA{short_w}/{long_w}"
+    st.markdown(f"### 回測結果：{strategy_name} | {stock_id}")
+    st.caption(f"回測區間：{start} ~ {end} | 共 {len(df)} 個交易日")
 
-    c5, c6, c7, c8 = st.columns(4)
-    c5.metric("總交易次數", str(report["total_trades"]))
-    c6.metric("年化報酬 (CAGR)", f"{report['cagr']:.2%}" if report['cagr'] == report['cagr'] else "N/A")
-    c7.metric("Sortino Ratio", f"{report['sortino_ratio']:.2f}")
-    c8.metric("盈虧比", f"{report['profit_factor']:.2f}")
+    # ── Layer 2：資金曲線（視覺焦點） ──
+    with st.container(border=True):
+        st.subheader("📈 資金曲線")
+        _render_equity_curve(report, height=450)
 
-    # ── 資金曲線 ──
-    st.subheader("資金曲線")
-    import plotly.graph_objects as go
-    import pandas as pd
-    equity = pd.Series(report["equity_curve"])
-    equity.index = pd.to_datetime(equity.index)
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=equity.index, y=equity.values, name="策略", line=dict(color="#007AFF")))
-    fig.update_layout(height=350, margin=dict(l=40, r=20, t=30, b=20))
-    st.plotly_chart(fig, use_container_width=True)
+    # ── Layer 3a：績效指標卡片群 ──
+    st.subheader("📊 績效指標")
+    from twquant.dashboard.components.metrics_card import render_metrics_cards
+    render_metrics_cards(report)
+
+    # ── Layer 3b：交易明細 + 月度報酬（雙欄） ──
+    st.divider()
+    col_trades, col_monthly = st.columns(2)
+
+    with col_trades:
+        with st.container(border=True):
+            st.subheader("交易明細")
+            if report.get("trades"):
+                import pandas as pd
+                trades_df = pd.DataFrame(report["trades"])
+                st.dataframe(trades_df, use_container_width=True)
+            else:
+                st.caption("無交易記錄")
+
+    with col_monthly:
+        with st.container(border=True):
+            st.subheader("月度報酬")
+            st.info("月度熱力圖（Phase 7 實作）")
 
 
 if __name__ == "__main__":
