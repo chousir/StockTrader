@@ -4,6 +4,11 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from ..styles.plotly_theme import register_twquant_dark_template
+from ..styles.theme import TWStockColors
+
+register_twquant_dark_template()
+
 
 def create_tw_stock_chart(
     df: pd.DataFrame,
@@ -47,21 +52,20 @@ def create_tw_stock_chart(
             low=df["low"],
             close=df["close"],
             name="K線",
-            increasing_line_color="#FF3B30",
-            increasing_fillcolor="#FF3B30",
-            decreasing_line_color="#34C759",
-            decreasing_fillcolor="#34C759",
+            increasing_line_color=TWStockColors.CANDLE_UP_BORDER,
+            increasing_fillcolor=TWStockColors.CANDLE_UP_FILL,
+            decreasing_line_color=TWStockColors.CANDLE_DOWN_BORDER,
+            decreasing_fillcolor=TWStockColors.CANDLE_DOWN_FILL,
         ),
         row=1,
         col=1,
     )
 
     # ── 均線 ──
-    ma_colors = {5: "#FF9500", 10: "#007AFF", 20: "#AF52DE", 60: "#FF2D55"}
     for period in ma_periods:
         if len(df) >= period:
             ma = df["close"].rolling(period).mean()
-            color = ma_colors.get(period, "#888888")
+            color = TWStockColors.MA_COLORS.get(period, "#888888")
             fig.add_trace(
                 go.Scatter(
                     x=dates,
@@ -77,7 +81,10 @@ def create_tw_stock_chart(
     # ── 副圖：成交量（漲紅跌綠） ──
     if show_volume:
         is_up = df["close"] >= df["open"]
-        bar_colors = ["#FF3B30" if up else "#34C759" for up in is_up]
+        bar_colors = [
+            TWStockColors.VOLUME_UP if up else TWStockColors.VOLUME_DOWN
+            for up in is_up
+        ]
         fig.add_trace(
             go.Bar(
                 x=dates,
