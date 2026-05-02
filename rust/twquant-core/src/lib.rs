@@ -1,5 +1,5 @@
 use ndarray::s;
-use numpy::PyReadonlyArray1;
+use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
 use pyo3::prelude::*;
 
 pub mod errors;
@@ -7,6 +7,8 @@ pub mod indicators;
 pub mod signals;
 mod validation;
 
+use indicators::custom_denoise::kalman_smooth;
+use signals::signal_engine::kalman_signals;
 use validation::InputGuard;
 
 #[pyfunction]
@@ -64,11 +66,48 @@ fn trigger_panic() -> PyResult<()> {
     }
 }
 
+/// 降噪移動平均：Kalman 濾波平滑 close price array
+#[pyfunction]
+fn denoise_prices(
+    py: Python<'_>,
+    prices: PyReadonlyArray1<f64>,
+    process_noise: Option<f64>,
+    measurement_noise: Option<f64>,
+) -> PyResult<Py<PyArray1<f64>>> {
+    InputGuard::validate_f64_array(&prices, "prices")?;
+    let slice = prices.as_slice()?;
+    let q = process_noise.unwrap_or(0.01);
+    let r = measurement_noise.unwrap_or(1.0);
+    let result = py.allow_threads(|| kalman_smooth(slice, q, r));
+    Ok(result.into_pyarray_bound(py).into())
+}
+
+/// Kalman 訊號引擎：回傳 (entries, exits) bool 陣列
+#[pyfunction]
+fn compute_kalman_signals(
+    py: Python<'_>,
+    prices: PyReadonlyArray1<f64>,
+    process_noise: Option<f64>,
+    measurement_noise: Option<f64>,
+) -> PyResult<(Py<PyArray1<bool>>, Py<PyArray1<bool>>)> {
+    InputGuard::validate_f64_array(&prices, "prices")?;
+    let slice = prices.as_slice()?;
+    let q = process_noise.unwrap_or(0.01);
+    let r = measurement_noise.unwrap_or(1.0);
+    let (entries, exits) = py.allow_threads(|| kalman_signals(slice, q, r));
+    Ok((
+        entries.into_pyarray_bound(py).into(),
+        exits.into_pyarray_bound(py).into(),
+    ))
+}
+
 #[pymodule]
 fn twquant_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(array_sum, m)?)?;
     m.add_function(wrap_pyfunction!(dot_product, m)?)?;
     m.add_function(wrap_pyfunction!(moving_sum, m)?)?;
     m.add_function(wrap_pyfunction!(trigger_panic, m)?)?;
+    m.add_function(wrap_pyfunction!(denoise_prices, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_kalman_signals, m)?)?;
     Ok(())
 }
