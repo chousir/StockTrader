@@ -1,0 +1,12 @@
+[package]
+name = "twquant-ml"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "twquant_ml"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { workspace = true }
+numpy = { workspace = true }

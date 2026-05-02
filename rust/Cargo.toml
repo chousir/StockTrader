@@ -1,0 +1,10 @@
+[workspace]
+members = ["twquant-core", "twquant-ml"]
+resolver = "2"
+
+[workspace.dependencies]
+pyo3 = { version = "0.21", features = ["extension-module"] }
+numpy = "0.21"
+ndarray = "0.15"
+arrow = "52"
+rayon = "1.10"
