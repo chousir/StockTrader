@@ -19,11 +19,28 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Poetry
-        run: pip install poetry
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Install dependencies
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-cargo-py-${{ hashFiles('rust/Cargo.lock') }}
+
+      - name: Install Poetry and maturin
+        run: pip install poetry maturin
+
+      - name: Install Python dependencies
         run: poetry install
+
+      - name: Build Rust extension (twquant-core)
+        run: |
+          cd rust/twquant-core
+          VIRTUAL_ENV=$(poetry env info --path) maturin develop --release
 
       - name: Lint with ruff
         run: poetry run ruff check src/ tests/
