@@ -12,9 +12,6 @@ build/
 venv/
 *.so
 
-# Poetry
-poetry.lock
-
 # Rust
 rust/target/
 *.rlib
