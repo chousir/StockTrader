@@ -68,13 +68,14 @@ class ExDividendFilter:
         直接 AND 到 entries/exits 陣列上使用。
         """
         mask = np.ones(len(price_df), dtype=bool)
-        dates = pd.to_datetime(price_df["date"])
+        dates = pd.to_datetime(price_df["date"].values)  # numpy DatetimeIndex, no pandas index
 
         for _, div_row in dividend_df.iterrows():
             ex_date = pd.to_datetime(div_row["date"])
             suppress_start = ex_date - pd.Timedelta(days=suppress_days_before * 2)
             suppress_end = ex_date + pd.Timedelta(days=suppress_days_after * 2)
-            mask &= ~((dates >= suppress_start) & (dates <= suppress_end))
+            suppress = (dates >= suppress_start) & (dates <= suppress_end)
+            mask &= ~np.asarray(suppress)  # ensure numpy bool array, avoid pandas index
 
         return mask
 
