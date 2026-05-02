@@ -30,6 +30,7 @@ def main():
         render_watchlist_chips,
         render_watchlist_button,
     )
+    from twquant.dashboard.components.tradingview_widgets import render_tv_technicals
 
     # ── Layer 1：全局導覽（搜尋 + 關注清單快捷 + 狀態） ──
     col_search, col_chips, col_status = st.columns([4, 4, 1])
@@ -79,7 +80,7 @@ def main():
         st.plotly_chart(fig, use_container_width=True)
 
     with tab_indicators:
-        st.info("技術指標面板（Phase 8 整合）")
+        render_tv_technicals(stock_id, height=400)
 
     with tab_institutional:
         st.info("法人籌碼面板（Phase 8 整合）")

@@ -1,4 +1,4 @@
-"""Page 1：市場總覽 - 大盤指數 + 法人動態 + TradingView 熱力圖預留區"""
+"""Page 1：市場總覽 - 跑馬燈 + 大盤摘要 + TradingView 熱力圖"""
 
 import sys
 
@@ -8,25 +8,32 @@ import streamlit as st
 
 st.set_page_config(page_title="市場總覽", page_icon="🏛️", layout="wide")
 
+from twquant.dashboard.components.tradingview_widgets import (
+    render_tv_heatmap,
+    render_tv_ticker_tape,
+)
+
 
 def main():
+    # ── 跑馬燈（頁面頂部即時行情）──
+    render_tv_ticker_tape()
+
     st.title("🏛️ 市場總覽")
 
     # ── 大盤摘要卡片 ──
     st.subheader("大盤指標")
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("台灣加權指數", "—", help="即時數據 Phase 8 整合")
-    c2.metric("成交量 (億)", "—", help="即時數據 Phase 8 整合")
-    c3.metric("外資買賣超", "—", help="即時數據 Phase 8 整合")
-    c4.metric("融資餘額變化", "—", help="即時數據 Phase 8 整合")
+    c1.metric("台灣加權指數", "—", help="即時數據整合中")
+    c2.metric("成交量 (億)", "—", help="即時數據整合中")
+    c3.metric("外資買賣超", "—", help="即時數據整合中")
+    c4.metric("融資餘額變化", "—", help="即時數據整合中")
 
     st.divider()
 
-    # ── TradingView 熱力圖預留區（Phase 8.1-8.2 實作）──
+    # ── TradingView 台股熱力圖 ──
     with st.container(border=True):
         st.subheader("📊 台股類股熱力圖")
-        st.info("TradingView 市場熱力圖將於 Phase 8 嵌入（TWSE + TPEX 類股漲跌一覽）")
-        st.caption("預計嵌入：TWSE 電子 / 金融 / 傳產類股市值加權熱力圖，grouping=sector")
+        render_tv_heatmap(height=500)
 
     st.divider()
 

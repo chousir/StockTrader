@@ -9,14 +9,24 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+import sys
 
+sys.path.insert(0, "src")
+
+from twquant.dashboard.components.onboarding import (
+    should_show_onboarding,
+    render_onboarding_wizard,
+)
+
+# ── 首次啟動顯示設定精靈 ──
+if should_show_onboarding():
+    render_onboarding_wizard()
+    st.stop()
+
+
+@st.cache_data(ttl=3600)
 def _load_data(stock_id: str, start_date: str, end_date: str):
-    """@st.cache_data 快取數據讀取（CSV 本地 → FinMind fallback）"""
-    import sys
-
-    sys.path.insert(0, "src")
     import pandas as pd
-
     from twquant.data.providers.csv_local import CsvLocalProvider
     from twquant.data.providers.base import EmptyDataError
 
@@ -28,7 +38,6 @@ def _load_data(stock_id: str, start_date: str, end_date: str):
 
     try:
         from twquant.data.providers.finmind import FinMindProvider
-
         provider = FinMindProvider()
         return provider.fetch_daily(stock_id, start_date, end_date)
     except Exception as e:
@@ -36,19 +45,14 @@ def _load_data(stock_id: str, start_date: str, end_date: str):
         return pd.DataFrame()
 
 
-load_data = st.cache_data(ttl=3600)(_load_data)
-
-
 def main():
-    import sys
-
-    sys.path.insert(0, "src")
     import pandas as pd
     from twquant.dashboard.components.kline_chart import create_tw_stock_chart
+    from twquant.dashboard.config import get_broker_discount, get_init_cash
 
-    # ── 側邊欄 ──
     with st.sidebar:
         st.title("twquant 台股量化")
+        st.caption(f"手續費折扣：{get_broker_discount():.0%}  初始資金：${get_init_cash():,}")
         stock_id = st.text_input("股票代碼", value="2330", max_chars=6)
         col1, col2 = st.columns(2)
         with col1:
@@ -61,10 +65,9 @@ def main():
             default=[5, 20],
         )
 
-    # ── 主頁面 ──
     st.header(f"📊 {stock_id} 日K線圖")
 
-    df = load_data(stock_id, str(start_date), str(end_date))
+    df = _load_data(stock_id, str(start_date), str(end_date))
 
     if df.empty:
         st.warning("無數據可顯示，請確認股票代碼與日期範圍。")
@@ -75,7 +78,6 @@ def main():
     fig = create_tw_stock_chart(df, ma_periods=ma_options)
     st.plotly_chart(fig, use_container_width=True)
 
-    # OHLCV 摘要
     with st.expander("數據摘要", expanded=False):
         st.dataframe(df.tail(20), use_container_width=True)
 
