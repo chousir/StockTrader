@@ -63,7 +63,23 @@ def _render_equity_curve(report: dict, height: int = 450):
 def main():
     with st.sidebar:
         st.header("回測設定")
-        stock_id = st.text_input("股票代碼", value="2330")
+
+        # 關注清單快速選股
+        try:
+            from twquant.data.watchlist import Watchlist
+            wl_stocks = Watchlist().list_all()
+        except Exception:
+            wl_stocks = []
+
+        if wl_stocks:
+            st.caption("⭐ 關注清單快速選股")
+            wl_choice = st.selectbox("從關注清單選擇", ["（手動輸入）"] + wl_stocks,
+                                      key="wl_stock_select")
+        else:
+            wl_choice = "（手動輸入）"
+
+        default_id = wl_choice if wl_choice != "（手動輸入）" else "2330"
+        stock_id = st.text_input("股票代碼", value=default_id)
         import pandas as pd
         start = st.date_input("開始日期", value=pd.Timestamp("2024-01-01"))
         end = st.date_input("結束日期", value=pd.Timestamp("2024-12-31"))

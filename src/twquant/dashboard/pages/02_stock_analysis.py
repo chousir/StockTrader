@@ -22,31 +22,39 @@ def _load_daily(stock_id: str, start_date: str, end_date: str):
     return FinMindProvider().fetch_daily(stock_id, start_date, end_date)
 
 
-def _render_sync_status():
-    st.caption("🟢 數據正常")
-
-
 def main():
     import pandas as pd
     from twquant.dashboard.components.kline_chart import create_tw_stock_chart
+    from twquant.dashboard.components.smart_search import render_smart_search
+    from twquant.dashboard.components.watchlist_ui import (
+        render_watchlist_chips,
+        render_watchlist_button,
+    )
 
-    # ── Layer 1：全局導覽 ──
-    col_stock, col_date, col_status = st.columns([3, 4, 2])
-    with col_stock:
-        stock_id = st.text_input("股票代碼", value="2330", max_chars=6, label_visibility="collapsed",
-                                  placeholder="輸入股票代碼（例如：2330）")
-    with col_date:
-        c1, c2 = st.columns(2)
-        with c1:
-            start_date = st.date_input("開始", value=pd.Timestamp("2024-01-01"),
-                                       label_visibility="collapsed")
-        with c2:
-            end_date = st.date_input("結束", value=pd.Timestamp("2024-12-31"),
-                                     label_visibility="collapsed")
+    # ── Layer 1：全局導覽（搜尋 + 關注清單快捷 + 狀態） ──
+    col_search, col_chips, col_status = st.columns([4, 4, 1])
+    with col_search:
+        searched_id = render_smart_search(key="stock_analysis_search")
+    with col_chips:
+        render_watchlist_chips()
     with col_status:
-        _render_sync_status()
+        st.caption("🟢")
+
+    # 決定最終股票代碼（搜尋 > session_state > 預設）
+    stock_id = (
+        searched_id
+        or st.session_state.get("current_stock")
+        or "2330"
+    )
 
     st.divider()
+
+    # ── 日期選擇（側邊欄） ──
+    with st.sidebar:
+        st.header("時間範圍")
+        start_date = st.date_input("開始日期", value=pd.Timestamp("2024-01-01"))
+        end_date = st.date_input("結束日期", value=pd.Timestamp("2024-12-31"))
+        render_watchlist_button(stock_id)
 
     # ── 載入資料 ──
     try:
@@ -71,10 +79,10 @@ def main():
         st.plotly_chart(fig, use_container_width=True)
 
     with tab_indicators:
-        st.info("技術指標面板（Phase 7 實作）")
+        st.info("技術指標面板（Phase 8 整合）")
 
     with tab_institutional:
-        st.info("法人籌碼面板（Phase 7 實作）")
+        st.info("法人籌碼面板（Phase 8 整合）")
 
     # ── Layer 3：輔助資訊 ──
     st.divider()

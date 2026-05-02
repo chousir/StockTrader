@@ -98,9 +98,20 @@ class MarketDataSyncEngine:
     # ─── 增量更新 ─────────────────────────────────────────────────────────
 
     async def incremental_sync(self) -> None:
-        """增量更新：僅抓取 HWM 之後的新數據"""
+        """增量更新：僅抓取 HWM 之後的新數據，關注清單股票優先"""
         today = date.today()
         stock_list = self.provider.fetch_stock_list()
+
+        try:
+            from .watchlist import Watchlist
+            watchlist_ids = set(Watchlist().list_all())
+        except Exception:
+            watchlist_ids = set()
+
+        stock_list = sorted(
+            stock_list,
+            key=lambda sid: (0 if sid in watchlist_ids else 1, sid),
+        )
 
         for stock_id in stock_list:
             meta = self._get_metadata(stock_id, "daily_price")
