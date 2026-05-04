@@ -1,0 +1,19 @@
+services:
+  twquant-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: twquant-app
+    ports:
+      - "8501:8501"
+    volumes:
+      - twquant-data:/app/data
+    environment:
+      - FINMIND_API_TOKEN=${FINMIND_API_TOKEN:-}
+      - ARCTICDB_URI=lmdb:///app/data/arcticdb
+      - TZ=Asia/Taipei
+    restart: unless-stopped
+
+volumes:
+  twquant-data:
+    name: twquant-data

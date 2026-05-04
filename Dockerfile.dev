@@ -1,0 +1,20 @@
+# 開發用 image：含 Rust 工具鏈，支援 maturin develop + hot reload
+FROM rust:1.80-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-dev python3-pip curl && \
+    pip3 install maturin streamlit plotly pandas numpy \
+        finmind aiohttp arcticdb vectorbt loguru rapidfuzz \
+        streamlit-searchbox pytest --break-system-packages && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+ENV PYTHONPATH=/app/src
+ENV RUST_BACKTRACE=1
+ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
+ENV STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+
+# 掛載整個專案目錄，每次啟動重新 maturin develop
+CMD bash -c "cd rust/twquant-core && maturin develop && \
+             python -m streamlit run src/twquant/dashboard/app.py --server.runOnSave true"

@@ -1,0 +1,14 @@
+# 用法：docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+services:
+  twquant-app:
+    build:
+      dockerfile: Dockerfile.dev
+    volumes:
+      - .:/app                       # 掛載整個專案，支援 hot reload
+      - cargo-cache:/root/.cargo     # 快取 Cargo 下載加速重複建置
+    environment:
+      - RUST_BACKTRACE=1
+
+volumes:
+  cargo-cache:
+    name: twquant-cargo-cache
