@@ -2,7 +2,7 @@ PYTHONPATH := src
 PYTHON     := PYTHONPATH=$(PYTHONPATH) python
 RUST_PATH  := $(HOME)/.cargo/bin
 
-.PHONY: run build-rust test clean docker-build docker-up docker-down docker-logs
+.PHONY: run build-rust test seed-data clean docker-build docker-up docker-down docker-logs
 
 ## 啟動 Streamlit dashboard
 run:
@@ -17,6 +17,10 @@ build-rust:
 ## 執行測試
 test:
 	$(PYTHON) -m pytest tests/python/ -v
+
+## 下載種子數據（需設定 FINMIND_API_TOKEN 或在 data/user_config.json 填入 token）
+seed-data:
+	$(PYTHON) scripts/seed_data.py
 
 ## ── Docker ──
 
