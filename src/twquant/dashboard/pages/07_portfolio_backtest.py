@@ -254,6 +254,38 @@ def main():
             df_hold = pd.DataFrame({"代號": sids_held, "名稱": [get_name(s) for s in sids_held], "評分": scores})
             st.dataframe(df_hold, use_container_width=True, hide_index=True, height=160)
 
+    # ── 相關性矩陣 ──
+    st.divider()
+    st.subheader("🔗 持倉股票報酬相關性矩陣")
+    with st.spinner("計算相關性..."):
+        import numpy as np
+        price_data_corr = _load_price_data(tuple(selected_sids), str(start), str(end))
+        if len(price_data_corr) >= 2:
+            ret_series = {}
+            for sid, df_c in price_data_corr.items():
+                ret_series[sid] = df_c["close"].astype(float).pct_change().dropna()
+            ret_df = pd.DataFrame(ret_series).dropna()
+            corr = ret_df.corr()
+            labels = [f"{s}" for s in corr.columns]
+            text_vals = [[f"{v:.2f}" for v in row] for row in corr.values]
+            fig_corr = go.Figure(go.Heatmap(
+                z=corr.values,
+                x=labels, y=labels,
+                text=text_vals, texttemplate="%{text}",
+                colorscale=[[0, "#3B82F6"], [0.5, "#1F2937"], [1, "#EF4444"]],
+                zmid=0, zmin=-1, zmax=1,
+                colorbar=dict(title="相關係數"),
+            ))
+            fig_corr.update_layout(
+                height=max(300, len(labels) * 40 + 80),
+                margin=dict(l=60, r=20, t=10, b=60),
+                xaxis=dict(tickangle=-30),
+            )
+            st.plotly_chart(fig_corr, use_container_width=True)
+            st.caption("相關係數接近 1 表高度正相關（一起漲跌），接近 0 表低相關（分散效果佳），接近 -1 表負相關（對沖）")
+        else:
+            st.caption("需至少 2 支有效股票才能計算相關性")
+
     # ── 報酬分布 ──
     st.divider()
     st.subheader("📊 年度績效對照")

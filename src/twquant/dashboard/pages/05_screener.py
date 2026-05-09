@@ -315,11 +315,36 @@ def main():
     watch  = [r for r in results if 5 < r['score'] < 8]
     avoid  = [r for r in results if r['score'] <= 5]
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns([1, 1, 1, 1, 1])
     c1.metric("分析標的", len(results))
     c2.metric("🟢 積極關注", len(strong))
     c3.metric("🟡 觀察中", len(watch))
     c4.metric("🔴 迴避", len(avoid))
+
+    # CSV 匯出
+    csv_rows = []
+    for r in results:
+        csv_rows.append({
+            "代號": r["sid"], "名稱": r["name"], "得分": r["score"],
+            "現價": r["price"], "RSI": f"{r['rsi']:.1f}",
+            "MA5": f"{r['ma5']:.2f}", "MA20": f"{r['ma20']:.2f}",
+            "週報酬": f"{r['ret5']:+.1%}" if r.get("ret5") and not math.isnan(r["ret5"]) else "N/A",
+            "月報酬": f"{r['ret20']:+.1%}" if r.get("ret20") and not math.isnan(r["ret20"]) else "N/A",
+            "季報酬": f"{r['ret60']:+.1%}" if r.get("ret60") and not math.isnan(r["ret60"]) else "N/A",
+            "量比": f"{r['vol_ratio']:.2f}x",
+            "ATR%": f"{r['atr_pct']:.1f}%",
+            "年化波動": f"{r['vol_20d']:.1f}%",
+            "停損": f"{r['stop_loss']:.2f}", "目標R1": f"{r['target']:.2f}",
+            "訊號": " | ".join(r.get("signals", [])),
+        })
+    csv_str = pd.DataFrame(csv_rows).to_csv(index=False, encoding="utf-8-sig")
+    c5.download_button(
+        "⬇️ 匯出 CSV",
+        data=csv_str.encode("utf-8-sig"),
+        file_name=f"screener_{pd.Timestamp.today().strftime('%Y%m%d_%H%M')}.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
 
     st.divider()
 

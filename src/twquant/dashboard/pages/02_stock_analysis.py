@@ -36,10 +36,10 @@ def _load_daily(stock_id: str, start_date: str, end_date: str):
 
 
 def _render_indicator_chart(df):
-    """RSI + MACD 三合一指標圖"""
+    """RSI + MACD + KD 四合一指標圖"""
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
-    from twquant.indicators.basic import compute_rsi, compute_macd, compute_ma
+    from twquant.indicators.basic import compute_rsi, compute_macd, compute_ma, compute_kd
     from twquant.dashboard.styles.plotly_theme import register_twquant_dark_template
     from twquant.dashboard.styles.theme import TWStockColors
 
@@ -48,11 +48,11 @@ def _render_indicator_chart(df):
     dates = df["date"].astype(str)
 
     fig = make_subplots(
-        rows=3, cols=1,
+        rows=4, cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.04,
-        row_heights=[0.45, 0.28, 0.27],
-        subplot_titles=("收盤價 + 均線", "RSI (14)", "MACD (12,26,9)"),
+        vertical_spacing=0.03,
+        row_heights=[0.38, 0.20, 0.22, 0.20],
+        subplot_titles=("收盤價 + 均線", "RSI (14)", "MACD (12,26,9)", "KD (9,3,3)"),
     )
 
     # 收盤價 + MA
@@ -97,8 +97,24 @@ def _render_indicator_chart(df):
     ), row=3, col=1)
     fig.add_hline(y=0, line_color="#6B7280", line_width=0.8, row=3, col=1)
 
+    # KD
+    k, d = compute_kd(df["high"], df["low"], df["close"])
+    fig.add_trace(go.Scatter(
+        x=dates, y=k, mode="lines", name="K",
+        line=dict(color="#22C55E", width=1.5),
+        hovertemplate="K: %{y:.1f}<extra></extra>",
+    ), row=4, col=1)
+    fig.add_trace(go.Scatter(
+        x=dates, y=d, mode="lines", name="D",
+        line=dict(color="#EF4444", width=1.5),
+        hovertemplate="D: %{y:.1f}<extra></extra>",
+    ), row=4, col=1)
+    for level, color in [(80, "#EF4444"), (20, "#22C55E"), (50, "#6B7280")]:
+        fig.add_hline(y=level, line_color=color, line_dash="dash", line_width=1, row=4, col=1)
+    fig.update_yaxes(range=[0, 100], row=4, col=1)
+
     fig.update_layout(
-        height=560,
+        height=680,
         xaxis_rangeslider_visible=False,
         margin=dict(l=40, r=20, t=40, b=20),
         hovermode="x unified",
@@ -107,7 +123,58 @@ def _render_indicator_chart(df):
     fig.update_yaxes(title_text="價格", row=1, col=1)
     fig.update_yaxes(title_text="RSI", row=2, col=1)
     fig.update_yaxes(title_text="MACD", row=3, col=1)
+    fig.update_yaxes(title_text="KD", row=4, col=1)
     return fig
+
+
+@st.cache_data(ttl=3600)
+def _load_institutional(stock_id: str, start_date: str, end_date: str):
+    """三大法人買賣超（外資/投信/自營商）"""
+    try:
+        from twquant.data.providers.finmind import FinMindProvider
+        from twquant.dashboard.config import get_finmind_token
+        api = FinMindProvider(token=get_finmind_token() or "")
+        return api.fetch_institutional(stock_id, start_date, end_date)
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=3600)
+def _load_monthly_revenue(stock_id: str, start_date: str):
+    """月營收 MoM/YoY"""
+    import pandas as pd
+    try:
+        from twquant.data.providers.finmind import FinMindProvider
+        from twquant.dashboard.config import get_finmind_token
+        api = FinMindProvider(token=get_finmind_token() or "")
+        api._limiter.wait_if_needed()
+        raw = api._api.taiwan_stock_month_revenue(stock_id=stock_id, start_date=start_date)
+        if raw is None or raw.empty:
+            return None
+        raw["date"] = pd.to_datetime(raw["date"])
+        raw = raw.sort_values("date").reset_index(drop=True)
+        return raw
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=3600)
+def _load_per_pbr(stock_id: str, start_date: str):
+    """本益比 / 股價淨值比 / 殖利率"""
+    import pandas as pd
+    try:
+        from twquant.data.providers.finmind import FinMindProvider
+        from twquant.dashboard.config import get_finmind_token
+        api = FinMindProvider(token=get_finmind_token() or "")
+        api._limiter.wait_if_needed()
+        raw = api._api.taiwan_stock_per_pbr(stock_id=stock_id, start_date=start_date)
+        if raw is None or raw.empty:
+            return None
+        raw["date"] = pd.to_datetime(raw["date"])
+        raw = raw.sort_values("date").reset_index(drop=True)
+        return raw
+    except Exception:
+        return None
 
 
 def main():
@@ -182,8 +249,8 @@ def main():
     c4.metric("成交量", f"{latest['volume']/1000:,.0f} 張")
 
     # ── Layer 2：主力圖表（tabs） ──
-    tab_kline, tab_indicators, tab_compare, tab_tv, tab_institutional = st.tabs([
-        "📈 K 線圖", "📊 技術指標 (RSI/MACD)", "🔀 多股比較", "🔭 TradingView 技術分析", "🏦 法人籌碼"
+    tab_kline, tab_indicators, tab_compare, tab_tv, tab_institutional, tab_revenue, tab_fundamental = st.tabs([
+        "📈 K 線圖", "📊 技術指標", "🔀 多股比較", "🔭 TradingView", "🏦 法人籌碼", "📋 月營收", "💰 基本面"
     ])
 
     with tab_kline:
@@ -200,18 +267,23 @@ def main():
         st.plotly_chart(ind_fig, use_container_width=True)
 
         # 最新指標數值摘要
-        from twquant.indicators.basic import compute_rsi, compute_macd
+        from twquant.indicators.basic import compute_rsi, compute_macd, compute_kd
         rsi_val = compute_rsi(df["close"], 14).iloc[-1]
         macd_line, sig_line, hist_val = compute_macd(df["close"])
         m_v, s_v, h_v = macd_line.iloc[-1], sig_line.iloc[-1], hist_val.iloc[-1]
+        k_s, d_s = compute_kd(df["high"], df["low"], df["close"])
+        k_v, d_v = k_s.iloc[-1], d_s.iloc[-1]
 
-        ri_col, m1, m2, m3 = st.columns(4)
+        ri_col, m1, m2, m3, kd1, kd2 = st.columns(6)
         rsi_state = "超買" if rsi_val > 70 else ("超賣" if rsi_val < 30 else "中性")
         ri_col.metric("RSI(14)", f"{rsi_val:.1f}", rsi_state)
         m1.metric("MACD", f"{m_v:.3f}")
         m2.metric("Signal", f"{s_v:.3f}")
         hist_delta = "多頭" if h_v > 0 else "空頭"
         m3.metric("MACD柱", f"{h_v:.3f}", hist_delta)
+        kd_state = "超買" if k_v > 80 else ("超賣" if k_v < 20 else "中性")
+        kd1.metric("K(9)", f"{k_v:.1f}", kd_state)
+        kd2.metric("D(3)", f"{d_v:.1f}")
 
     with tab_compare:
         import plotly.graph_objects as go
@@ -291,7 +363,212 @@ def main():
         render_tv_technicals(stock_id, height=420)
 
     with tab_institutional:
-        st.info("法人籌碼資料需 FinMind API Token，請在設定精靈中填入後重新同步。")
+        import plotly.graph_objects as go
+        st.caption("外資、投信、自營商每日買賣超（來源：FinMind）")
+        inst_start = (pd.Timestamp.today() - pd.DateOffset(months=6)).strftime("%Y-%m-%d")
+        df_inst = _load_institutional(stock_id, inst_start, str(end_date))
+        if df_inst is None or df_inst.empty:
+            st.info("⚠️ 無法取得法人資料，請確認 FinMind Token 已設定（設定精靈 → API Token）")
+        else:
+            # 找出外資/投信/自營商 net 欄位
+            cols_buy = [c for c in df_inst.columns if c.endswith("_buy")]
+            cols_sell = [c for c in df_inst.columns if c.endswith("_sell")]
+            INST_NAME_MAP = {
+                "Foreign_Investor": "外資",
+                "Investment_Trust": "投信",
+                "Dealer_self": "自營商(自行)",
+                "Dealer": "自營商",
+            }
+            inst_colors = {"外資": "#3B82F6", "投信": "#F97316", "自營商": "#A855F7", "自營商(自行)": "#A855F7"}
+
+            # 累計淨買超（近60日）
+            df_inst["date"] = pd.to_datetime(df_inst["date"])
+            df_inst = df_inst.tail(60)
+
+            fig_inst = go.Figure()
+            for buy_col in cols_buy:
+                name_key = buy_col.replace("_buy", "")
+                sell_col = name_key + "_sell"
+                label = INST_NAME_MAP.get(name_key, name_key)
+                if sell_col not in df_inst.columns:
+                    continue
+                net = df_inst[buy_col].fillna(0) - df_inst[sell_col].fillna(0)
+                color = inst_colors.get(label, "#94A3B8")
+                bar_colors = [color if v >= 0 else "#EF4444" for v in net]
+                fig_inst.add_trace(go.Bar(
+                    x=df_inst["date"], y=net / 1000,
+                    name=label,
+                    marker_color=bar_colors,
+                    hovertemplate=f"<b>{label}</b>: %{{y:+,.0f}} 張<extra></extra>",
+                ))
+
+            fig_inst.update_layout(
+                height=360, barmode="group",
+                xaxis_title="日期", yaxis_title="淨買超（千股）",
+                hovermode="x unified",
+                legend=dict(orientation="h", y=1.05),
+                margin=dict(l=40, r=20, t=20, b=20),
+            )
+            st.plotly_chart(fig_inst, use_container_width=True)
+
+            # 累積買超趨勢
+            st.subheader("累積買超趨勢")
+            fig_cum = go.Figure()
+            for buy_col in cols_buy:
+                name_key = buy_col.replace("_buy", "")
+                sell_col = name_key + "_sell"
+                label = INST_NAME_MAP.get(name_key, name_key)
+                if sell_col not in df_inst.columns:
+                    continue
+                net = df_inst[buy_col].fillna(0) - df_inst[sell_col].fillna(0)
+                color = inst_colors.get(label, "#94A3B8")
+                fig_cum.add_trace(go.Scatter(
+                    x=df_inst["date"], y=(net / 1000).cumsum(),
+                    name=label, mode="lines",
+                    line=dict(color=color, width=2),
+                ))
+            fig_cum.add_hline(y=0, line_color="#4B5563", line_width=1)
+            fig_cum.update_layout(
+                height=280, hovermode="x unified",
+                yaxis_title="累積淨買超（千股）",
+                legend=dict(orientation="h", y=1.05),
+                margin=dict(l=40, r=20, t=10, b=20),
+            )
+            st.plotly_chart(fig_cum, use_container_width=True)
+
+    with tab_revenue:
+        import plotly.graph_objects as go
+        st.caption("月營收 MoM（月增率）/ YoY（年增率），來源：FinMind")
+        rev_start = (pd.Timestamp.today() - pd.DateOffset(years=3)).strftime("%Y-%m-%d")
+        df_rev = _load_monthly_revenue(stock_id, rev_start)
+        if df_rev is None or df_rev.empty:
+            st.info("⚠️ 無法取得月營收資料，請確認 FinMind Token 已設定")
+        else:
+            # 關鍵欄位：revenue, revenue_month, revenue_year
+            rev_col = next((c for c in ["revenue", "Revenue", "revenue_month"] if c in df_rev.columns), None)
+            if rev_col is None:
+                st.warning(f"欄位名稱異常：{list(df_rev.columns)}")
+            else:
+                df_rev["revenue_val"] = pd.to_numeric(df_rev[rev_col], errors="coerce")
+                df_rev = df_rev.dropna(subset=["revenue_val"])
+                # MoM / YoY
+                df_rev["mom"] = df_rev["revenue_val"].pct_change(1) * 100
+                df_rev["yoy"] = df_rev["revenue_val"].pct_change(12) * 100
+
+                from plotly.subplots import make_subplots as _msp
+                fig_rev = _msp(
+                    rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
+                    row_heights=[0.55, 0.45],
+                    subplot_titles=("月營收（千元）", "月增率 / 年增率（%）"),
+                )
+
+                fig_rev.add_trace(go.Bar(
+                    x=df_rev["date"], y=df_rev["revenue_val"] / 1000,
+                    name="月營收", marker_color="#3B82F6",
+                    hovertemplate="月營收: %{y:,.0f} 千元<extra></extra>",
+                ), row=1, col=1)
+
+                mom_colors = ["#22C55E" if v >= 0 else "#EF4444" for v in df_rev["mom"].fillna(0)]
+                fig_rev.add_trace(go.Bar(
+                    x=df_rev["date"], y=df_rev["mom"],
+                    name="MoM%", marker_color=mom_colors,
+                    hovertemplate="MoM: %{y:+.1f}%<extra></extra>",
+                ), row=2, col=1)
+                fig_rev.add_trace(go.Scatter(
+                    x=df_rev["date"], y=df_rev["yoy"],
+                    name="YoY%", mode="lines+markers",
+                    line=dict(color="#F97316", width=2),
+                    hovertemplate="YoY: %{y:+.1f}%<extra></extra>",
+                ), row=2, col=1)
+                fig_rev.add_hline(y=0, line_color="#4B5563", line_width=1, row=2, col=1)
+
+                fig_rev.update_layout(
+                    height=480, hovermode="x unified",
+                    legend=dict(orientation="h", y=1.05),
+                    margin=dict(l=40, r=20, t=40, b=20),
+                )
+                st.plotly_chart(fig_rev, use_container_width=True)
+
+                # 最近12月表格
+                st.subheader("近12月營收摘要")
+                tbl = df_rev[["date", "revenue_val", "mom", "yoy"]].tail(12).copy()
+                tbl.columns = ["月份", "月營收（千元）", "MoM%", "YoY%"]
+                tbl["月營收（千元）"] = tbl["月營收（千元）"].apply(lambda v: f"{v/1000:,.0f}")
+                tbl["MoM%"] = tbl["MoM%"].apply(lambda v: f"{v:+.1f}%" if pd.notna(v) else "-")
+                tbl["YoY%"] = tbl["YoY%"].apply(lambda v: f"{v:+.1f}%" if pd.notna(v) else "-")
+                tbl["月份"] = tbl["月份"].dt.strftime("%Y-%m")
+                st.dataframe(tbl[::-1], use_container_width=True, hide_index=True)
+
+    with tab_fundamental:
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots as _msp2
+        st.caption("本益比(PER) / 股價淨值比(PBR) / 殖利率，來源：FinMind")
+        fund_start = (pd.Timestamp.today() - pd.DateOffset(years=3)).strftime("%Y-%m-%d")
+        df_fund = _load_per_pbr(stock_id, fund_start)
+        if df_fund is None or df_fund.empty:
+            st.info("⚠️ 無法取得本益比/殖利率資料，請確認 FinMind Token 已設定")
+        else:
+            per_col = next((c for c in ["PER", "per", "price_earnings_ratio"] if c in df_fund.columns), None)
+            pbr_col = next((c for c in ["PBR", "pbr", "price_book_ratio"] if c in df_fund.columns), None)
+            div_col = next((c for c in ["dividend_yield", "DividendYield", "yield"] if c in df_fund.columns), None)
+
+            if per_col is None and pbr_col is None:
+                st.warning(f"欄位名稱異常：{list(df_fund.columns)}")
+            else:
+                n_rows = sum([per_col is not None, pbr_col is not None, div_col is not None])
+                titles = []
+                if per_col: titles.append("本益比 (PER)")
+                if pbr_col: titles.append("股價淨值比 (PBR)")
+                if div_col: titles.append("殖利率 (%)")
+                fig_fund = _msp2(rows=n_rows, cols=1, shared_xaxes=True,
+                                  vertical_spacing=0.06,
+                                  row_heights=[1/n_rows] * n_rows,
+                                  subplot_titles=titles)
+                row = 1
+                if per_col:
+                    df_fund[per_col] = pd.to_numeric(df_fund[per_col], errors="coerce")
+                    fig_fund.add_trace(go.Scatter(
+                        x=df_fund["date"], y=df_fund[per_col],
+                        name="PER", mode="lines",
+                        line=dict(color="#3B82F6", width=2),
+                    ), row=row, col=1)
+                    row += 1
+                if pbr_col:
+                    df_fund[pbr_col] = pd.to_numeric(df_fund[pbr_col], errors="coerce")
+                    fig_fund.add_trace(go.Scatter(
+                        x=df_fund["date"], y=df_fund[pbr_col],
+                        name="PBR", mode="lines",
+                        line=dict(color="#F97316", width=2),
+                    ), row=row, col=1)
+                    row += 1
+                if div_col:
+                    df_fund[div_col] = pd.to_numeric(df_fund[div_col], errors="coerce")
+                    fig_fund.add_trace(go.Scatter(
+                        x=df_fund["date"], y=df_fund[div_col],
+                        name="殖利率", mode="lines",
+                        line=dict(color="#22C55E", width=2),
+                    ), row=row, col=1)
+
+                fig_fund.update_layout(
+                    height=120 * n_rows + 80,
+                    hovermode="x unified",
+                    showlegend=False,
+                    margin=dict(l=40, r=20, t=40, b=20),
+                )
+                st.plotly_chart(fig_fund, use_container_width=True)
+
+                # 最新數值摘要
+                latest_fund = df_fund.iloc[-1]
+                fcols = st.columns(3)
+                if per_col:
+                    fcols[0].metric("最新 PER", f"{latest_fund.get(per_col, 'N/A'):.1f}x"
+                                    if pd.notna(latest_fund.get(per_col)) else "N/A")
+                if pbr_col:
+                    fcols[1].metric("最新 PBR", f"{latest_fund.get(pbr_col, 'N/A'):.2f}x"
+                                    if pd.notna(latest_fund.get(pbr_col)) else "N/A")
+                if div_col:
+                    fcols[2].metric("最新殖利率", f"{latest_fund.get(div_col, 'N/A'):.2f}%"
+                                    if pd.notna(latest_fund.get(div_col)) else "N/A")
 
     # ── Layer 3：區間統計 + 技術水位 ──
     st.divider()
