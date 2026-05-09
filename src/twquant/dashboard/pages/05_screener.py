@@ -181,9 +181,14 @@ def compute_score(df):
 
 @st.cache_data(ttl=1800)
 def run_screener(stock_list: tuple, start: str, end: str) -> list[dict]:
+    from twquant.data.universe import get_name
     results = []
-    for sid_name in stock_list:
-        sid, name = sid_name.split(":", 1)
+    for item in stock_list:
+        if ":" in item:
+            sid, name = item.split(":", 1)
+        else:
+            sid = item.strip()
+            name = get_name(sid)
         df = _load_stock(sid, start, end)
         if df is None or len(df) < 60:
             continue
@@ -191,7 +196,7 @@ def run_screener(stock_list: tuple, start: str, end: str) -> list[dict]:
             r = compute_score(df)
             r['sid'] = sid; r['name'] = name
             results.append(r)
-        except Exception as e:
+        except Exception:
             pass
     return sorted(results, key=lambda x: -x['score'])
 
@@ -222,24 +227,51 @@ def main():
         f"{mh_txt}  |  {thread_txt}  |  資料來源：系統 DB（FinMind 備援）"
     )
 
+    from twquant.data.universe import ANALYST_UNIVERSE, get_name, list_sectors
+
     with st.sidebar:
         st.header("篩選設定")
         today = pd.Timestamp.today().normalize()
         end_date = (today - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
         start_date = (today - pd.DateOffset(months=18)).strftime('%Y-%m-%d')
 
-        stock_input = st.text_area(
-            "股票清單（格式：代碼:名稱，每行一個）",
-            value="\n".join(DEFAULT_LIST),
-            height=300,
-        )
-        min_score = st.slider("最低得分篩選", 0, 14, 6)
+        # ── 股票來源切換 ──
+        mode = st.radio("股票來源", ["產業板塊", "全宇宙", "自訂清單"], horizontal=True)
+
+        if mode == "產業板塊":
+            sector = st.selectbox("選擇產業", list_sectors())
+            sector_sids = [sid for sid, _ in ANALYST_UNIVERSE[sector]]
+            selected_sids = st.multiselect(
+                "股票（可移除）",
+                options=sector_sids,
+                default=sector_sids,
+                format_func=lambda s: f"{s} {get_name(s)}",
+            )
+            stock_list = tuple(selected_sids)
+        elif mode == "全宇宙":
+            all_sids = [sid for stocks in ANALYST_UNIVERSE.values() for sid, _ in stocks]
+            # deduplicate preserving order
+            seen: set[str] = set()
+            all_sids_dedup = [s for s in all_sids if not (s in seen or seen.add(s))]
+            st.caption(f"全宇宙：{len(all_sids_dedup)} 支（含已入庫）")
+            stock_list = tuple(all_sids_dedup)
+        else:
+            raw_input = st.text_area(
+                "自訂清單（代碼:名稱 或純代碼，每行一個）",
+                value="\n".join(DEFAULT_LIST),
+                height=250,
+            )
+            stock_list = tuple(s.strip() for s in raw_input.strip().split("\n") if s.strip())
+
+        st.divider()
+        min_score = st.slider("最低得分篩選", -5, 14, 6)
+        sort_by = st.selectbox("排序依據", ["得分", "週報酬", "月報酬", "RSI"])
         run_btn = st.button("🔍 開始選股", type="primary", use_container_width=True)
         st.caption(f"資料區間：{start_date} ~ {end_date}")
-        st.caption("⏱ 快取 30 分鐘，盤中自動更新")
+        st.caption("⏱ 快取 30 分鐘，資料來源：系統 DB")
 
     if not run_btn:
-        st.info("設定左側股票清單後，點擊「開始選股」")
+        st.info("設定左側選股條件後，點擊「開始選股」")
         with st.expander("📖 評分說明"):
             st.markdown("""
 **多因子評分系統（滿分約 14 分）**
@@ -259,9 +291,8 @@ def main():
             """)
         return
 
-    stock_list = tuple(s.strip() for s in stock_input.strip().split('\n') if ':' in s.strip())
     if not stock_list:
-        st.error("請確認股票清單格式（代碼:名稱）")
+        st.error("請選擇至少一支股票")
         return
 
     with st.spinner(f"從系統資料庫分析 {len(stock_list)} 檔股票..."):
@@ -270,6 +301,15 @@ def main():
     if not results:
         st.error("無法取得分析結果，請確認資料庫是否已初始化")
         return
+
+    # 排序
+    sort_key_map = {
+        "得分": lambda r: -r["score"],
+        "週報酬": lambda r: -(r.get("ret5") or -99),
+        "月報酬": lambda r: -(r.get("ret20") or -99),
+        "RSI": lambda r: -(r.get("rsi") or 0),
+    }
+    results = sorted(results, key=sort_key_map.get(sort_by, lambda r: -r["score"]))
 
     strong = [r for r in results if r['score'] >= 8]
     watch  = [r for r in results if 5 < r['score'] < 8]

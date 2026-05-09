@@ -8,18 +8,31 @@ import streamlit as st
 
 st.set_page_config(page_title="個股分析", page_icon="📈", layout="wide")
 
+DB_PATH = "data/twquant.db"
 
-@st.cache_data(ttl=3600)
+
+@st.cache_data(ttl=1800)
 def _load_daily(stock_id: str, start_date: str, end_date: str):
-    from twquant.data.providers.csv_local import CsvLocalProvider
-    from twquant.data.providers.base import EmptyDataError
-
+    import pandas as pd
+    from twquant.data.storage import SQLiteStorage
+    storage = SQLiteStorage(DB_PATH)
+    df = storage.load(f"daily_price/{stock_id}", start_date=start_date, end_date=end_date)
+    if not df.empty and len(df) >= 10:
+        df["date"] = pd.to_datetime(df["date"])
+        return df
+    # 備援：嘗試 CSV 樣本
     try:
+        from twquant.data.providers.csv_local import CsvLocalProvider
+        from twquant.data.providers.base import EmptyDataError
         return CsvLocalProvider("data/sample").fetch_daily(stock_id, start_date, end_date)
-    except EmptyDataError:
+    except Exception:
         pass
+    # 備援：FinMind API
     from twquant.data.providers.finmind import FinMindProvider
-    return FinMindProvider().fetch_daily(stock_id, start_date, end_date)
+    from twquant.dashboard.config import get_finmind_token
+    df_api = FinMindProvider(token=get_finmind_token() or "").fetch_daily(stock_id, start_date, end_date)
+    storage.upsert(f"daily_price/{stock_id}", df_api)
+    return df_api
 
 
 def _render_indicator_chart(df):
@@ -169,8 +182,8 @@ def main():
     c4.metric("成交量", f"{latest['volume']/1000:,.0f} 張")
 
     # ── Layer 2：主力圖表（tabs） ──
-    tab_kline, tab_indicators, tab_tv, tab_institutional = st.tabs([
-        "📈 K 線圖", "📊 技術指標 (RSI/MACD)", "🔭 TradingView 技術分析", "🏦 法人籌碼"
+    tab_kline, tab_indicators, tab_compare, tab_tv, tab_institutional = st.tabs([
+        "📈 K 線圖", "📊 技術指標 (RSI/MACD)", "🔀 多股比較", "🔭 TradingView 技術分析", "🏦 法人籌碼"
     ])
 
     with tab_kline:
@@ -199,6 +212,80 @@ def main():
         m2.metric("Signal", f"{s_v:.3f}")
         hist_delta = "多頭" if h_v > 0 else "空頭"
         m3.metric("MACD柱", f"{h_v:.3f}", hist_delta)
+
+    with tab_compare:
+        import plotly.graph_objects as go
+        from twquant.data.universe import ANALYST_UNIVERSE, get_name
+
+        st.caption("將多支股票的報酬率標準化（起始=100），疊加在同一圖上比較相對表現")
+        all_compare_sids = sorted(set(
+            sid for stocks in ANALYST_UNIVERSE.values() for sid, _ in stocks
+        ))
+        compare_sids = st.multiselect(
+            "選擇比較標的（可多選）",
+            options=all_compare_sids,
+            default=[stock_id, "0050"],
+            format_func=lambda s: f"{s} {get_name(s)}",
+            key="compare_sids_select",
+        )
+        norm_mode = st.radio("基準化方式", ["起始=100（絕對報酬）", "各自起始=100（相對強弱）"],
+                             horizontal=True)
+
+        if compare_sids:
+            from twquant.data.storage import SQLiteStorage
+            storage_c = SQLiteStorage(DB_PATH)
+            fig_cmp = go.Figure()
+            color_palette = ["#FFD700","#3B82F6","#22C55E","#EF4444","#A855F7","#F97316","#94A3B8"]
+
+            for i, cmp_sid in enumerate(compare_sids):
+                df_c = storage_c.load(f"daily_price/{cmp_sid}",
+                                      start_date=str(start_date), end_date=str(end_date))
+                if df_c.empty:
+                    st.caption(f"{cmp_sid}: 無資料（DB 未入庫）")
+                    continue
+                close_c = df_c["close"].astype(float)
+                dates_c = pd.to_datetime(df_c["date"])
+                base = float(close_c.iloc[0])
+                normalized = close_c / base * 100
+                color = color_palette[i % len(color_palette)]
+                width = 2.5 if cmp_sid == stock_id else 1.5
+                fig_cmp.add_trace(go.Scatter(
+                    x=dates_c, y=normalized,
+                    name=f"{cmp_sid} {get_name(cmp_sid)}",
+                    line=dict(color=color, width=width),
+                    hovertemplate=f"<b>{cmp_sid}</b>: %{{y:.1f}} (+%{{customdata:.1f}}%)<extra></extra>",
+                    customdata=(normalized - 100).values,
+                ))
+
+            fig_cmp.add_hline(y=100, line_color="#4B5563", line_dash="dot", line_width=1)
+            fig_cmp.update_layout(
+                height=460,
+                hovermode="x unified",
+                xaxis_title="日期",
+                yaxis_title="相對表現（起始=100）",
+                legend=dict(orientation="h", y=1.05),
+                margin=dict(l=40, r=20, t=20, b=20),
+            )
+            st.plotly_chart(fig_cmp, use_container_width=True)
+
+            # 報酬率排行榜
+            rows_cmp = []
+            storage_c2 = SQLiteStorage(DB_PATH)
+            for cmp_sid in compare_sids:
+                df_c2 = storage_c2.load(f"daily_price/{cmp_sid}",
+                                        start_date=str(start_date), end_date=str(end_date))
+                if df_c2.empty:
+                    continue
+                cl2 = df_c2["close"].astype(float)
+                ret = (cl2.iloc[-1] / cl2.iloc[0] - 1) * 100
+                rows_cmp.append({"代號": cmp_sid, "名稱": get_name(cmp_sid),
+                                  "期間報酬": f"{ret:+.1f}%",
+                                  "現價": f"{cl2.iloc[-1]:.2f}"})
+            if rows_cmp:
+                rows_cmp_sorted = sorted(rows_cmp,
+                    key=lambda r: float(r["期間報酬"].replace("%","").replace("+","")),
+                    reverse=True)
+                st.dataframe(pd.DataFrame(rows_cmp_sorted), use_container_width=True, hide_index=True)
 
     with tab_tv:
         render_tv_technicals(stock_id, height=420)
