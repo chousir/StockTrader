@@ -62,6 +62,71 @@ def main():
     render_tv_ticker_tape()
     st.title("🏛️ 市場總覽")
 
+    # ── 市場狀態快報 ──────────────────────────────────────────────────────
+    @st.cache_data(ttl=1800)
+    def _market_regime():
+        from twquant.data.storage import SQLiteStorage
+        from twquant.indicators.basic import compute_rsi, compute_ma
+        storage = SQLiteStorage(DB_PATH)
+        df0 = storage.load("daily_price/0050")
+        if df0.empty: return None
+        cl = df0["close"].astype(float)
+        ma60 = float(cl.rolling(60).mean().iloc[-1])
+        price = float(cl.iloc[-1])
+        rsi = float(compute_rsi(cl, 14).iloc[-1])
+        bull = price > ma60
+
+        all_sids = list({sid for sec in ANALYST_UNIVERSE.values() for sid, _ in sec})
+        overbought, momentum, oversold = [], [], []
+        for sid in all_sids:
+            dfc = storage.load(f"daily_price/{sid}")
+            if len(dfc) < 60: continue
+            c = dfc["close"].astype(float)
+            r = float(compute_rsi(c, 14).iloc[-1])
+            m20 = float(compute_ma(c, 20).iloc[-1])
+            m60 = float(compute_ma(c, 60).iloc[-1])
+            p = float(c.iloc[-1])
+            ret20 = (p/float(c.iloc[-21])-1)*100 if len(c)>=21 else 0
+            if r > 80: overbought.append(f"{sid}({get_name(sid)}) RSI={r:.0f}")
+            elif p > m20 > m60 and 45 <= r <= 72: momentum.append((sid, ret20))
+            elif r < 35: oversold.append(f"{sid}({get_name(sid)}) RSI={r:.0f}")
+        momentum.sort(key=lambda x: -x[1])
+        return {"bull": bull, "price": price, "ma60": ma60, "rsi_0050": rsi,
+                "overbought": overbought, "momentum": momentum[:5], "oversold": oversold}
+
+    regime = _market_regime()
+    if regime:
+        bull = regime["bull"]
+        regime_color = "#22C55E" if bull else "#EF4444"
+        regime_text = "🐂 牛市" if bull else "🐻 熊市"
+        st.markdown(
+            f"<div style='background:{regime_color}22;border-left:4px solid {regime_color};"
+            f"padding:10px 16px;border-radius:4px;margin-bottom:8px'>"
+            f"<b style='color:{regime_color}'>{regime_text}</b> — "
+            f"0050 = {regime['price']:.1f} / MA60 = {regime['ma60']:.1f} / RSI = {regime['rsi_0050']:.0f}"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+        col_mo, col_hot, col_cool = st.columns(3)
+        with col_mo:
+            st.caption("🚀 **動能前5（趨勢+RSI健康）**")
+            for sid, ret in regime["momentum"]:
+                st.markdown(f"- {sid} {get_name(sid)}　`{ret:+.1f}%`")
+        with col_hot:
+            if regime["overbought"]:
+                st.caption(f"⚠️ **過熱警告（RSI>80）** {len(regime['overbought'])} 支")
+                for s in regime["overbought"]: st.markdown(f"- {s}")
+            else:
+                st.caption("⚠️ 過熱警告：無")
+        with col_cool:
+            if regime["oversold"]:
+                st.caption(f"👀 **超賣觀察（RSI<35）** {len(regime['oversold'])} 支")
+                for s in regime["oversold"]: st.markdown(f"- {s}")
+            else:
+                st.caption("👀 超賣觀察：無（市場偏熱）")
+
+    st.divider()
+
     # ── 關鍵行情卡 ────────────────────────────────────────────────────────
     key_sids = ("0050", "2330", "2454", "2603", "2882", "0056")
     labels = {"0050": "大盤(0050)", "2330": "台積電", "2454": "聯發科",
