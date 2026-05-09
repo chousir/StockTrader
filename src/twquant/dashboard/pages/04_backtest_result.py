@@ -34,9 +34,10 @@ def _run_backtest(stock_id: str, start_date: str, end_date: str,
     return report, df
 
 
-def _render_equity_curve(report: dict, height: int = 450):
+def _render_equity_curve(report: dict, start_date: str, end_date: str, height: int = 450):
     import plotly.graph_objects as go
     import pandas as pd
+    import numpy as np
     from twquant.dashboard.styles.theme import TWStockColors
 
     equity = pd.Series(report["equity_curve"])
@@ -50,14 +51,47 @@ def _render_equity_curve(report: dict, height: int = 450):
         fill="tozeroy",
         fillcolor="rgba(0, 212, 170, 0.1)",
     ))
+
+    # 0050 買進持有基準
+    try:
+        from twquant.data.storage import SQLiteStorage
+        storage = SQLiteStorage("data/twquant.db")
+        df_bench = storage.load("daily_price/0050", start_date=start_date, end_date=end_date)
+        if not df_bench.empty:
+            init_cash = report.get("final_value", 1_000_000) / (1 + report.get("total_return", 0))
+            bench_close = df_bench["close"].astype(float)
+            bench_dates = pd.to_datetime(df_bench["date"])
+            bench_equity = init_cash * bench_close / bench_close.iloc[0]
+            fig.add_trace(go.Scatter(
+                x=bench_dates, y=bench_equity.values,
+                name="0050 持有（基準）",
+                line=dict(color="#94A3B8", width=1.5, dash="dash"),
+            ))
+    except Exception:
+        pass
+
+    bench_return = None
+    try:
+        bench_return = (bench_equity.iloc[-1] / bench_equity.iloc[0] - 1)
+    except Exception:
+        pass
+
     fig.update_layout(
         height=height,
         margin=dict(l=40, r=20, t=30, b=20),
         hovermode="x unified",
         xaxis_title="日期",
         yaxis_title="資產淨值",
+        legend=dict(orientation="h", y=1.02),
     )
     st.plotly_chart(fig, use_container_width=True)
+
+    if bench_return is not None:
+        alpha = report.get("total_return", 0) - bench_return
+        col1, col2, col3 = st.columns(3)
+        col1.metric("策略報酬", f"{report.get('total_return', 0):.1%}")
+        col2.metric("0050 基準", f"{bench_return:.1%}")
+        col3.metric("超額報酬 α", f"{alpha:+.1%}", delta_color="normal")
 
 
 def main():
@@ -106,8 +140,8 @@ def main():
 
     # ── Layer 2：資金曲線（視覺焦點） ──
     with st.container(border=True):
-        st.subheader("📈 資金曲線")
-        _render_equity_curve(report, height=450)
+        st.subheader("📈 資金曲線（含 0050 基準）")
+        _render_equity_curve(report, str(start), str(end), height=450)
 
     # ── Layer 3a：績效指標卡片群 ──
     st.subheader("📊 績效指標")
@@ -130,8 +164,36 @@ def main():
 
     with col_monthly:
         with st.container(border=True):
-            st.subheader("月度報酬")
-            st.info("月度熱力圖（Phase 7 實作）")
+            st.subheader("月度報酬熱力圖")
+            try:
+                import plotly.graph_objects as go
+                equity_s = pd.Series(report["equity_curve"])
+                equity_s.index = pd.to_datetime(equity_s.index)
+                monthly = equity_s.resample("ME").last().pct_change().dropna() * 100
+                years = sorted(monthly.index.year.unique())
+                month_names = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+                z = []
+                for yr in years:
+                    row = []
+                    for mo in range(1, 13):
+                        vals = monthly[(monthly.index.year == yr) & (monthly.index.month == mo)]
+                        row.append(round(float(vals.iloc[0]), 2) if len(vals) > 0 else None)
+                    z.append(row)
+                text = [[f"{v:.1f}%" if v is not None else "" for v in row] for row in z]
+                fig_heat = go.Figure(go.Heatmap(
+                    z=z, x=month_names, y=[str(y) for y in years],
+                    text=text, texttemplate="%{text}",
+                    colorscale=[[0,"#EF4444"],[0.5,"#1F2937"],[1,"#22C55E"]],
+                    zmid=0, hoverongaps=False,
+                    colorbar=dict(title="月報酬%"),
+                ))
+                fig_heat.update_layout(
+                    height=max(160, len(years)*38+60),
+                    margin=dict(l=50, r=10, t=10, b=10),
+                )
+                st.plotly_chart(fig_heat, use_container_width=True)
+            except Exception as e:
+                st.caption(f"熱力圖無法顯示: {e}")
 
 
 if __name__ == "__main__":

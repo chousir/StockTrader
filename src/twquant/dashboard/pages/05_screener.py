@@ -1,4 +1,4 @@
-"""Page 5：多因子選股工具 - 分析師用快速篩選"""
+"""Page 5：多因子選股工具 - 分析師用快速篩選（DB 優先，API 備援）"""
 
 import sys, math, time, datetime, warnings
 warnings.filterwarnings('ignore')
@@ -8,22 +8,70 @@ import streamlit as st
 
 st.set_page_config(page_title="選股工具", page_icon="🔍", layout="wide")
 
+DB_PATH = "data/twquant.db"
+
+DEFAULT_LIST = [
+    "2330:台積電", "2454:聯發科", "2303:聯電",   "2308:台達電",
+    "2317:鴻海",   "3008:大立光", "2412:中華電",  "2002:中鋼",
+    "2882:國泰金", "2881:富邦金", "2886:兆豐金",  "2891:中信金",
+    "2603:長榮",   "2609:陽明",   "2615:萬海",
+    "0050:元大台50", "0056:元大高息", "00878:國泰永續",
+]
+DEFAULT_SIDS = [s.split(":")[0] for s in DEFAULT_LIST]
+
+
+# ─────────────────────────────────────────────────────────────
+# 背景同步（cache_resource 確保 Streamlit 只啟動一次執行緒）
+# ─────────────────────────────────────────────────────────────
+@st.cache_resource
+def _start_sync():
+    from twquant.data.auto_sync import ensure_running
+    ensure_running(DB_PATH, DEFAULT_SIDS)
+    return True
+
+
+# ─────────────────────────────────────────────────────────────
+# 資料載入（DB 優先，缺失才呼叫 API）
+# ─────────────────────────────────────────────────────────────
+@st.cache_data(ttl=1800)
+def _load_stock(sid: str, start: str, end: str):
+    import pandas as pd
+    from twquant.data.storage import SQLiteStorage
+
+    storage = SQLiteStorage(DB_PATH)
+    df = storage.load(f"daily_price/{sid}", start_date=start, end_date=end)
+    if len(df) >= 60:
+        df["date"] = pd.to_datetime(df["date"])
+        return df
+
+    # DB 資料不足 → 備援 API
+    try:
+        from twquant.data.providers.finmind import FinMindProvider
+        from twquant.dashboard.config import get_finmind_token
+        provider = FinMindProvider(token=get_finmind_token() or "")
+        df_api = provider.fetch_daily(sid, start, end)
+        df_api["date"] = pd.to_datetime(df_api["date"])
+        # 寫回 DB 供下次使用
+        storage.upsert(f"daily_price/{sid}", df_api)
+        return df_api
+    except Exception:
+        return pd.DataFrame()
+
 
 # ─────────────────────────────────────────────────────────────
 # 選股因子計算
 # ─────────────────────────────────────────────────────────────
 def compute_score(df):
-    """多因子評分，回傳 dict"""
     import numpy as np
     import pandas as pd
     from twquant.indicators.basic import (
-        compute_rsi, compute_macd, compute_ma, compute_bollinger, compute_ema,
+        compute_rsi, compute_macd, compute_ma, compute_bollinger,
     )
 
-    close  = df['close']
-    high   = df['high']
-    low    = df['low']
-    volume = df['volume']
+    close  = df['close'].astype(float)
+    high   = df['high'].astype(float)
+    low    = df['low'].astype(float)
+    volume = df['volume'].astype(float)
     price  = close.iloc[-1]
     n      = len(df)
 
@@ -55,20 +103,16 @@ def compute_score(df):
 
     high60 = close.iloc[-60:].max() if n >= 60 else close.max()
     dd     = (price / high60 - 1)
-
     bb_pos = (price - bb_lo) / (bb_up - bb_lo) if (bb_up - bb_lo) > 0 else 0.5
-
     dr = close.pct_change().dropna()
     vol_20d = dr.iloc[-20:].std() * math.sqrt(252) * 100
 
-    # 停損/目標
     stop = max(price - 1.5 * atr14, ma20 * 0.99)
     risk = price - stop
     target = price + risk * 2
 
     score = 0; signals = []
 
-    # 趨勢
     if not math.isnan(ma60):
         if price > ma20 > ma60:
             score += 3; signals.append("✅ 多頭排列")
@@ -78,7 +122,6 @@ def compute_score(df):
             score += 1; signals.append("➕ 中線支撐")
         else:
             score -= 1; signals.append("⚠️ 跌破均線")
-    # RSI
     if not math.isnan(rsi):
         if 45 <= rsi <= 65:
             score += 3; signals.append(f"✅ RSI健康({rsi:.0f})")
@@ -90,7 +133,6 @@ def compute_score(df):
             score -= 2; signals.append(f"🔴 RSI超買({rsi:.0f})")
         else:
             score -= 1; signals.append(f"⚠️ RSI弱({rsi:.0f})")
-    # MACD
     if not math.isnan(hist_v):
         if hist_v > 0 and hist_prev <= 0:
             score += 3; signals.append("🚀 MACD金叉")
@@ -100,34 +142,29 @@ def compute_score(df):
             score -= 2; signals.append("🔴 MACD死叉")
         else:
             score -= 1; signals.append("⚠️ MACD負值")
-    # 量能
     if vol_ratio >= 1.3:
         score += 2; signals.append(f"✅ 量增({vol_ratio:.1f}x)")
     elif vol_ratio >= 1.0:
         score += 1; signals.append(f"➕ 量平({vol_ratio:.1f}x)")
     else:
         score -= 1; signals.append(f"⚠️ 量縮({vol_ratio:.1f}x)")
-    # 布林
     if 0.5 <= bb_pos <= 0.85:
         score += 2; signals.append(f"✅ 布林健康({bb_pos:.0%})")
     elif bb_pos > 0.85:
         score -= 1; signals.append(f"⚠️ 近布林上軌({bb_pos:.0%})")
     elif bb_pos < 0.2:
         score += 1; signals.append("➕ 超賣反彈機會")
-    # 回撤
     if dd < -0.20:
         score -= 2; signals.append(f"🔴 距高點{dd:.0%}")
     elif dd < -0.12:
         score -= 1; signals.append(f"⚠️ 距高點{dd:.0%}")
     elif dd >= -0.05:
         score += 1; signals.append(f"✅ 接近高點({dd:.0%})")
-    # 週動能
     if not math.isnan(ret5):
         if ret5 > 0.03:
             score += 1; signals.append(f"✅ 週漲{ret5:.1%}")
         elif ret5 < -0.05:
             score -= 1; signals.append(f"⚠️ 週跌{ret5:.1%}")
-    # 波動懲罰
     if atr14 / price * 100 > 4.0:
         score -= 1; signals.append(f"⚠️ 高波動(ATR={atr14/price*100:.1f}%)")
 
@@ -142,24 +179,20 @@ def compute_score(df):
     }
 
 
-@st.cache_data(ttl=3600)
-def run_screener(stock_list: list[str], start: str, end: str) -> list[dict]:
-    from twquant.data.providers.finmind import FinMindProvider
-    provider = FinMindProvider(token="")
+@st.cache_data(ttl=1800)
+def run_screener(stock_list: tuple, start: str, end: str) -> list[dict]:
     results = []
     for sid_name in stock_list:
-        sid, name = sid_name.split(":")
+        sid, name = sid_name.split(":", 1)
+        df = _load_stock(sid, start, end)
+        if df is None or len(df) < 60:
+            continue
         try:
-            df = provider.fetch_daily(sid, start, end)
-            if len(df) < 60:
-                continue
             r = compute_score(df)
-            r['sid'] = sid
-            r['name'] = name
+            r['sid'] = sid; r['name'] = name
             results.append(r)
-            time.sleep(0.3)
         except Exception as e:
-            st.warning(f"{sid} {name}: {e}")
+            pass
     return sorted(results, key=lambda x: -x['score'])
 
 
@@ -169,21 +202,25 @@ def run_screener(stock_list: list[str], start: str, end: str) -> list[dict]:
 def main():
     import pandas as pd
     import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
     from twquant.dashboard.styles.plotly_theme import register_twquant_dark_template
-    from twquant.dashboard.styles.theme import TWStockColors
+    from twquant.data.auto_sync import last_sync_info
 
     register_twquant_dark_template()
 
+    # 確保背景同步執行緒已啟動
+    _start_sync()
+
     st.title("🔍 多因子選股工具")
 
-    DEFAULT_LIST = [
-        "2330:台積電", "2454:聯發科", "2303:聯電",   "2308:台達電",
-        "2317:鴻海",   "3008:大立光", "2412:中華電",  "2002:中鋼",
-        "2882:國泰金", "2881:富邦金", "2886:兆豐金",  "2891:中信金",
-        "2603:長榮",   "2609:陽明",   "2615:萬海",
-        "0050:元大台50", "0056:元大高息", "00878:國泰永續",
-    ]
+    # ── 同步狀態列 ──
+    info = last_sync_info(DB_PATH, DEFAULT_SIDS)
+    sync_icon = "🟢" if info["up_to_date"] == info["total"] else "🟡"
+    mh_txt = "盤中（30 分鐘同步）" if info["is_market_hours"] else "盤後（60 分鐘同步）"
+    thread_txt = "背景同步執行中" if info["thread_alive"] else "同步執行緒未啟動"
+    st.caption(
+        f"{sync_icon} 資料庫：{info['up_to_date']}/{info['total']} 檔最新  |  "
+        f"{mh_txt}  |  {thread_txt}  |  資料來源：系統 DB（FinMind 備援）"
+    )
 
     with st.sidebar:
         st.header("篩選設定")
@@ -199,7 +236,7 @@ def main():
         min_score = st.slider("最低得分篩選", 0, 14, 6)
         run_btn = st.button("🔍 開始選股", type="primary", use_container_width=True)
         st.caption(f"資料區間：{start_date} ~ {end_date}")
-        st.caption("⏱ 首次約 10-15 秒，快取 1 小時")
+        st.caption("⏱ 快取 30 分鐘，盤中自動更新")
 
     if not run_btn:
         st.info("設定左側股票清單後，點擊「開始選股」")
@@ -222,19 +259,18 @@ def main():
             """)
         return
 
-    stock_list = [s.strip() for s in stock_input.strip().split('\n') if ':' in s.strip()]
+    stock_list = tuple(s.strip() for s in stock_input.strip().split('\n') if ':' in s.strip())
     if not stock_list:
         st.error("請確認股票清單格式（代碼:名稱）")
         return
 
-    with st.spinner(f"分析 {len(stock_list)} 檔股票中..."):
+    with st.spinner(f"從系統資料庫分析 {len(stock_list)} 檔股票..."):
         results = run_screener(stock_list, start_date, end_date)
 
     if not results:
-        st.error("無法取得分析結果")
+        st.error("無法取得分析結果，請確認資料庫是否已初始化")
         return
 
-    # ── 摘要統計 ──
     strong = [r for r in results if r['score'] >= 8]
     watch  = [r for r in results if 5 < r['score'] < 8]
     avoid  = [r for r in results if r['score'] <= 5]
@@ -266,10 +302,9 @@ def main():
     st.plotly_chart(fig_score, use_container_width=True)
 
     # ── 積極關注清單 ──
+    filtered = [r for r in results if r['score'] >= min_score]
     if strong:
         st.subheader("🟢 積極關注（得分 ≥ 8）")
-        filtered = [r for r in results if r['score'] >= min_score]
-
         for r in filtered:
             if r['score'] < 8:
                 continue
