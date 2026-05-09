@@ -31,25 +31,29 @@ def _load_from_db(sid: str, start: str, end: str):
 def strategy_ma60_trend(df):
     """策略 E：MA60 主趨勢跟蹤（少量進出，長線持有）"""
     from twquant.indicators.basic import compute_ma
-    close = df["close"]
+    import pandas as pd
+    close = df["close"].astype(float)
     ma60  = compute_ma(close, 60)
     ma120 = compute_ma(close, 120)
     uptrend = (ma60 > ma120) & (close > ma60)
-    entries = (uptrend & ~uptrend.shift(1).fillna(False)).to_numpy().astype(bool)
-    exits   = (~uptrend & ~(~uptrend).shift(1).fillna(False)).to_numpy().astype(bool)
+    prev = uptrend.shift(1).fillna(False).infer_objects(copy=False).astype(bool)
+    entries = (uptrend & ~prev).to_numpy().astype(bool)
+    exits   = (~uptrend & ~(~uptrend).shift(1).fillna(False).infer_objects(copy=False).astype(bool)).to_numpy().astype(bool)
     return entries, exits
 
 
 def strategy_momentum_concentrate(df):
     """策略 F：動能精選（20 日動能 > 5% + 站穩 MA60，破 MA60×0.97 才出）★ 推薦 ★"""
     from twquant.indicators.basic import compute_ma
-    close = df["close"]
+    close = df["close"].astype(float)
     ma60  = compute_ma(close, 60)
     ret20 = close.pct_change(20)
     entry_cond = (close > ma60) & (ret20 > 0.05)
     exit_cond  = close < ma60 * 0.97
-    entries = (entry_cond & ~entry_cond.shift(1).fillna(False)).to_numpy().astype(bool)
-    exits   = (exit_cond  & ~exit_cond.shift(1).fillna(False)).to_numpy().astype(bool)
+    prev_e = entry_cond.shift(1).fillna(False).infer_objects(copy=False).astype(bool)
+    prev_x = exit_cond.shift(1).fillna(False).infer_objects(copy=False).astype(bool)
+    entries = (entry_cond & ~prev_e).to_numpy().astype(bool)
+    exits   = (exit_cond & ~prev_x).to_numpy().astype(bool)
     return entries, exits
 
 

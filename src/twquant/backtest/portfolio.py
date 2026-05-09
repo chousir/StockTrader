@@ -42,7 +42,12 @@ def _score_stock(close: pd.Series, volume: pd.Series) -> float:
     elif price < ma60:
         score -= 1
 
-    # 2. RSI
+    # 量能比（先算，RSI 超賣判斷需要）
+    vol5 = float(volume.iloc[-5:].mean())
+    vol20 = float(volume.iloc[-20:].mean())
+    vol_ratio = vol5 / vol20 if vol20 > 0 else 1.0
+
+    # 2. RSI（帶超賣反彈加分）
     rsi = float(compute_rsi(close, 14).iloc[-1])
     if not math.isnan(rsi):
         if 45 <= rsi <= 65:
@@ -51,6 +56,9 @@ def _score_stock(close: pd.Series, volume: pd.Series) -> float:
             score += 1
         elif rsi > 72:
             score -= 2
+        elif rsi < 30:
+            # 強超賣：若同時量增，視為反彈機會
+            score += 2.0 if vol_ratio > 1.2 else 0.5
         elif rsi < 35:
             score += 0.5
         else:
@@ -73,22 +81,19 @@ def _score_stock(close: pd.Series, volume: pd.Series) -> float:
     except Exception:
         pass
 
-    # 4. 動能（20 日報酬）
+    # 4. 動能（20 日報酬）：極度超跌時軟化懲罰
     ret20 = (close.iloc[-1] / close.iloc[-21] - 1) if n >= 21 else float("nan")
     if not math.isnan(ret20):
         if ret20 > 0.08:
             score += 2
         elif ret20 > 0.03:
             score += 1
-        elif ret20 < -0.10:
-            score -= 2
+        elif ret20 < -0.15:
+            score -= 1   # 極度超跌：軟化懲罰（可能是超賣反彈前兆）
         elif ret20 < -0.05:
             score -= 1
 
     # 5. 量能比
-    vol5 = float(volume.iloc[-5:].mean())
-    vol20 = float(volume.iloc[-20:].mean())
-    vol_ratio = vol5 / vol20 if vol20 > 0 else 1.0
     if vol_ratio >= 1.3:
         score += 1.5
     elif vol_ratio < 0.7:
@@ -104,10 +109,12 @@ def run_portfolio_backtest(
     start: str,
     end: str,
     top_n: int = 5,
-    rebal_freq: str = "ME",                # 'ME'=月底, 'QE'=季底
+    rebal_freq: str = "ME",                # 'ME'=月底, 'W-FRI'=週底
     init_cash: float = 1_000_000,
     broker_discount: float = 0.6,
     is_etf: bool = False,
+    market_filter: bool = False,           # True=啟用市場趨勢濾網（0050<MA60 時全倉現金）
+    market_sid: str = "0050",             # 濾網基準指數
 ) -> dict:
     """
     月度輪動回測。
@@ -121,6 +128,13 @@ def run_portfolio_backtest(
     """
     broker_fee = 0.001425 * broker_discount
     sell_tax   = 0.001 if is_etf else 0.003
+
+    # ── 市場趨勢濾網（0050 vs MA60） ──
+    market_price_series: pd.Series | None = None
+    if market_filter and market_sid in price_data:
+        mdf = price_data[market_sid].copy()
+        mdf["date"] = pd.to_datetime(mdf["date"])
+        market_price_series = mdf.set_index("date")["close"].astype(float)
 
     # ── 建立日期索引 ──
     all_dates: pd.DatetimeIndex = pd.date_range(start, end, freq="B")
@@ -161,6 +175,21 @@ def run_portfolio_backtest(
     for i, dt in enumerate(all_dates):
         # 在再平衡日執行換倉
         if dt in rebal_dates or i == 0:
+            # 市場趨勢濾網：0050 < MA60 → 清空持倉，等待轉好
+            if market_filter and market_price_series is not None:
+                mhist = market_price_series.loc[:dt].dropna()
+                if len(mhist) >= 60:
+                    mma60 = float(mhist.rolling(60).mean().iloc[-1])
+                    market_bearish = float(mhist.iloc[-1]) < mma60
+                    if market_bearish:
+                        # 清倉
+                        for sid in list(holdings.keys()):
+                            px = price_series[sid].get(dt, 0)
+                            cash += holdings[sid] * px * (1 - sell_tax - broker_fee)
+                            del holdings[sid]
+                        equity_values.append((dt, portfolio_value(dt)))
+                        continue  # 跳過選股
+
             # 1. 對所有股票評分（用截至今日的過去資料）
             scores: dict[str, float] = {}
             for sid in price_series:

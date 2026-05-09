@@ -31,7 +31,8 @@ def _load_price_data(sids: tuple, start: str, end: str) -> dict:
 
 
 @st.cache_data(ttl=1800)
-def _run_portfolio(sids: tuple, start: str, end: str, top_n: int):
+def _run_portfolio(sids: tuple, start: str, end: str, top_n: int,
+                   rebal_freq: str = "ME", market_filter: bool = False):
     import pandas as pd
     import numpy as np
     from twquant.backtest.portfolio import run_portfolio_backtest
@@ -42,7 +43,9 @@ def _run_portfolio(sids: tuple, start: str, end: str, top_n: int):
     if not price_data:
         return None, None
 
-    result = run_portfolio_backtest(price_data, start, end, top_n=top_n)
+    result = run_portfolio_backtest(price_data, start, end, top_n=top_n,
+                                    rebal_freq=rebal_freq, market_filter=market_filter,
+                                    market_sid="0050")
 
     # 0050 benchmark
     storage = SQLiteStorage(DB_PATH)
@@ -133,6 +136,10 @@ def main():
         start = st.date_input("開始日期", value=default_start)
         end   = st.date_input("結束日期", value=default_end)
         top_n = st.slider("每期持有支數 (Top-N)", 1, 10, 5)
+        rebal_mode = st.radio("換倉頻率", ["月度（穩健）", "週度（靈活）"], horizontal=True)
+        rebal_freq = "ME" if rebal_mode == "月度（穩健）" else "W-FRI"
+        market_filter = st.toggle("啟用市場濾網（0050<MA60 時全倉現金）", value=False,
+                                   help="熊市自動停倉，防止在空頭市場中持續虧損")
         run_btn = st.button("執行組合回測", type="primary", use_container_width=True)
 
     if not run_btn:
@@ -178,8 +185,8 @@ def main():
         st.warning("請選擇至少一支股票")
         return
 
-    with st.spinner(f"回測 {len(selected_sids)} 支股票，月度輪動 Top-{top_n}..."):
-        result, bm = _run_portfolio(tuple(selected_sids), str(start), str(end), top_n)
+    with st.spinner(f"回測 {len(selected_sids)} 支股票，{rebal_mode} Top-{top_n}..."):
+        result, bm = _run_portfolio(tuple(selected_sids), str(start), str(end), top_n, rebal_freq, market_filter)
 
     if result is None:
         st.error("無法載入資料，請確認股票已入庫（可先執行種子腳本）")
