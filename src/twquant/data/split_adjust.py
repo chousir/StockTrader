@@ -15,7 +15,7 @@ def detect_splits(close: np.ndarray) -> list[tuple[int, float]]:
     """
     splits = []
     for i in range(1, len(close)):
-        if close[i - 1] == 0:
+        if close[i - 1] == 0 or close[i] == 0:
             continue
         change = (close[i] - close[i - 1]) / close[i - 1]
         if change < -_SPLIT_THRESHOLD:
