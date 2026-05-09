@@ -84,7 +84,9 @@ class FinMindProvider(BaseDataProvider):
             ["open", "high", "low", "close"]
         ].astype(float)
         df["volume"] = df["volume"].astype("int64")
-        return df.sort_values("date").reset_index(drop=True)
+        df = df.sort_values("date").reset_index(drop=True)
+        from ..split_adjust import apply_split_adjust
+        return apply_split_adjust(df)
 
     # ─── 三大法人 ─────────────────────────────────────────────────────────
 

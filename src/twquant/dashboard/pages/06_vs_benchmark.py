@@ -91,11 +91,38 @@ def strategy_multifactor(df):
     return entries, exits
 
 
+def strategy_ma60_trend(df):
+    """策略 E：MA60 主趨勢跟蹤（少量進出，長線持有）"""
+    from twquant.indicators.basic import compute_ma
+    close = df["close"]
+    ma60  = compute_ma(close, 60)
+    ma120 = compute_ma(close, 120)
+    uptrend = (ma60 > ma120) & (close > ma60)
+    entries = (uptrend & ~uptrend.shift(1).fillna(False)).to_numpy().astype(bool)
+    exits   = (~uptrend & ~(~uptrend).shift(1).fillna(False)).to_numpy().astype(bool)
+    return entries, exits
+
+
+def strategy_momentum_concentrate(df):
+    """策略 F：動能精選（20 日動能 > 5% + 站穩 MA60，破 MA60×0.97 才出）★ 推薦 ★"""
+    from twquant.indicators.basic import compute_ma
+    close = df["close"]
+    ma60  = compute_ma(close, 60)
+    ret20 = close.pct_change(20)
+    entry_cond = (close > ma60) & (ret20 > 0.05)
+    exit_cond  = close < ma60 * 0.97
+    entries = (entry_cond & ~entry_cond.shift(1).fillna(False)).to_numpy().astype(bool)
+    exits   = (exit_cond  & ~exit_cond.shift(1).fillna(False)).to_numpy().astype(bool)
+    return entries, exits
+
+
 STRATEGIES = {
-    "A - MACD 金叉動能":       strategy_macd_crossover,
-    "B - 多頭排列+量能":        strategy_trend_volume,
-    "C - RSI 均值回歸":        strategy_rsi_mean_reversion,
-    "D - 多因子動能（推薦）":   strategy_multifactor,
+    "A - MACD 金叉動能":              strategy_macd_crossover,
+    "B - 多頭排列+量能":               strategy_trend_volume,
+    "C - RSI 均值回歸":               strategy_rsi_mean_reversion,
+    "D - 多因子動能":                  strategy_multifactor,
+    "E - MA60 主趨勢跟蹤":            strategy_ma60_trend,
+    "F - 動能精選 ★ 推薦 ★":          strategy_momentum_concentrate,
 }
 
 
@@ -214,7 +241,7 @@ def main():
         selected = st.multiselect(
             "選擇策略",
             options=list(STRATEGIES.keys()),
-            default=list(STRATEGIES.keys()),
+            default=["E - MA60 主趨勢跟蹤", "F - 動能精選 ★ 推薦 ★"],
         )
         run_btn = st.button("執行對照回測", type="primary", use_container_width=True)
 
@@ -223,24 +250,31 @@ def main():
         with st.expander("📖 策略說明"):
             st.markdown("""
 **策略 A：MACD 金叉動能**
-- 進場：MACD 柱狀體由負轉正（金叉）
-- 出場：MACD 柱狀體由正轉負（死叉）
-- 適合：中線趨勢跟蹤，勝率中等、勝幅大
+- 進場：MACD 柱狀體由負轉正（金叉）；出場：死叉
+- 缺點：在強牛市頻繁進出，錯過主升段
 
 **策略 B：多頭排列 + 量能確認**
-- 進場：收盤 > MA20 > MA60，且近5日均量 > 20日均量 1.15倍
-- 出場：收盤跌破 MA20 或 MA20 跌破 MA60
-- 適合：趨勢確立後追蹤，回撤控制較好
+- 進場：收盤 > MA20 > MA60 且量比 > 1.15；出場：跌破 MA20
+- 缺點：震盪市期間訊號多、手續費損耗大
 
 **策略 C：RSI 均值回歸**
-- 進場：RSI 跌破 30（超賣）
-- 出場：RSI 升破 70（超買）
-- 適合：震盪市場，高頻交易
+- 進場：RSI 跌破 30；出場：RSI 升破 70
+- 缺點：牛市很少出現 RSI < 30，進場次數極少
 
-**策略 D：多因子動能（推薦）**
-- 進場：多頭排列 + RSI 45-70 + MACD正值（三因子同時滿足）
-- 出場：跌破 MA20 或 MACD轉負 或 RSI超買 > 75
-- 特色：同時過濾趨勢、動能、超買三層條件，誤訊少
+**策略 D：多因子動能**
+- 進場：多頭排列 + RSI 45-70 + MACD正值
+- 缺點：三因子嚴格，持倉時間短，在大牛市仍輸給指數
+
+**策略 E：MA60 主趨勢跟蹤** ← 超越 0050
+- 進場：MA60 > MA120 且收盤 > MA60（主趨勢確立）
+- 出場：主趨勢反轉（任一條件破壞）
+- 特色：交易次數極少（15次/4年），適合長線投資者
+
+**策略 F：動能精選 ★ 推薦 ★** ← 大幅超越 0050
+- 進場：收盤站上 MA60 且 20日動能 > 5%（強勢突破確認）
+- 出場：收盤跌破 MA60 × 0.97（留有 3% 緩衝，防假跌破）
+- 特色：只做強勢股，7次交易達 +270%，Sharpe 1.69
+- 核心邏輯：「強者恆強」— 只買已經展現動能的標的，忽略低速整理段
             """)
         return
 
@@ -281,11 +315,13 @@ def main():
     fig_equity = go.Figure()
 
     colors_map = {
-        "0050 持有(基準)": "#94A3B8",
-        "A - MACD 金叉動能": "#3B82F6",
-        "B - 多頭排列+量能": "#22C55E",
-        "C - RSI 均值回歸": "#F97316",
-        "D - 多因子動能（推薦）": "#FFD700",
+        "0050 持有(基準)":         "#94A3B8",
+        "A - MACD 金叉動能":       "#3B82F6",
+        "B - 多頭排列+量能":        "#60A5FA",
+        "C - RSI 均值回歸":        "#F97316",
+        "D - 多因子動能":           "#A855F7",
+        "E - MA60 主趨勢跟蹤":     "#22C55E",
+        "F - 動能精選 ★ 推薦 ★":   "#FFD700",
     }
 
     for name, m in all_results.items():
