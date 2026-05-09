@@ -20,7 +20,7 @@ def _is_market_hours() -> bool:
 
 
 def _sync_once(db_path: str, stock_ids: list[str]) -> None:
-    """執行一次增量同步：從 DB HWM 到今日"""
+    """執行一次增量同步：從 DB HWM 到今日（自動同步 DB 中所有股票）"""
     from datetime import date
     from twquant.data.storage import SQLiteStorage
     from twquant.data.providers.finmind import FinMindProvider
@@ -28,12 +28,18 @@ def _sync_once(db_path: str, stock_ids: list[str]) -> None:
     from twquant.dashboard.config import get_finmind_token
 
     storage = SQLiteStorage(db_path)
+    # 從 DB 讀取所有已入庫股票，不受初始 stock_ids 限制
+    all_syms = storage.list_symbols()
+    all_sids = [s.replace("daily_price/", "") for s in all_syms if s.startswith("daily_price/")]
+    # 合併傳入清單（seed 後首次 sync 時 DB 可能還空）
+    merged = list(dict.fromkeys(all_sids + stock_ids))
+
     provider = FinMindProvider(token=get_finmind_token() or "")
     checker = TWSEDataSanityChecker()
     today = date.today().isoformat()
     updated = 0
 
-    for sid in stock_ids:
+    for sid in merged:
         symbol = f"daily_price/{sid}"
         hwm = storage.get_hwm(symbol)
         start = (
@@ -53,7 +59,7 @@ def _sync_once(db_path: str, stock_ids: list[str]) -> None:
             logger.debug(f"[auto_sync] {sid} 跳過: {e}")
         time.sleep(0.2)
 
-    logger.info(f"[auto_sync] 完成，更新 {updated}/{len(stock_ids)} 檔")
+    logger.info(f"[auto_sync] 完成，更新 {updated}/{len(merged)} 檔")
 
 
 def _worker(db_path: str, stock_ids: list[str]) -> None:
@@ -81,20 +87,24 @@ def ensure_running(db_path: str, stock_ids: list[str]) -> None:
             logger.info(f"[auto_sync] 背景同步啟動，監控 {len(stock_ids)} 檔")
 
 
-def last_sync_info(db_path: str, stock_ids: list[str]) -> dict:
-    """回傳同步狀態摘要（供 UI 顯示）"""
+def last_sync_info(db_path: str, stock_ids: list[str] | None = None) -> dict:
+    """回傳同步狀態摘要（供 UI 顯示），stock_ids 可省略，預設查詢 DB 全部"""
     from twquant.data.storage import SQLiteStorage
     from datetime import date
 
     storage = SQLiteStorage(db_path)
+    all_syms = storage.list_symbols()
+    all_sids = [s.replace("daily_price/", "") for s in all_syms if s.startswith("daily_price/")]
+    merged = list(dict.fromkeys(all_sids + (stock_ids or [])))
+
     today = date.today()
     up_to_date = 0
-    for sid in stock_ids:
+    for sid in merged:
         hwm = storage.get_hwm(f"daily_price/{sid}")
-        if hwm and (today - hwm).days <= 3:  # 允許 3 天誤差（周末）
+        if hwm and (today - hwm).days <= 3:
             up_to_date += 1
     return {
-        "total": len(stock_ids),
+        "total": len(merged),
         "up_to_date": up_to_date,
         "is_market_hours": _is_market_hours(),
         "thread_alive": _thread is not None and _thread.is_alive(),

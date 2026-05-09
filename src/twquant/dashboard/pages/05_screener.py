@@ -249,11 +249,11 @@ def main():
             )
             stock_list = tuple(selected_sids)
         elif mode == "全宇宙":
-            all_sids = [sid for stocks in ANALYST_UNIVERSE.values() for sid, _ in stocks]
-            # deduplicate preserving order
-            seen: set[str] = set()
-            all_sids_dedup = [s for s in all_sids if not (s in seen or seen.add(s))]
-            st.caption(f"全宇宙：{len(all_sids_dedup)} 支（含已入庫）")
+            from twquant.data.storage import SQLiteStorage
+            _db = SQLiteStorage(DB_PATH)
+            _syms = _db.list_symbols()
+            all_sids_dedup = [s.replace("daily_price/", "") for s in _syms if s.startswith("daily_price/")]
+            st.caption(f"全宇宙：DB 中共 {len(all_sids_dedup)} 支已入庫股票")
             stock_list = tuple(all_sids_dedup)
         else:
             raw_input = st.text_area(
