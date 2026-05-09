@@ -81,8 +81,11 @@ def main():
         default_id = wl_choice if wl_choice != "（手動輸入）" else "2330"
         stock_id = st.text_input("股票代碼", value=default_id)
         import pandas as pd
-        start = st.date_input("開始日期", value=pd.Timestamp("2024-01-01"))
-        end = st.date_input("結束日期", value=pd.Timestamp("2024-12-31"))
+        today = pd.Timestamp.today().normalize()
+        default_end = today - pd.Timedelta(days=1)
+        default_start = default_end - pd.DateOffset(years=1)
+        start = st.date_input("開始日期", value=default_start)
+        end = st.date_input("結束日期", value=default_end)
         short_w = st.slider("短均線", 3, 30, 5)
         long_w = st.slider("長均線", 10, 120, 20)
         run_btn = st.button("執行回測", type="primary")

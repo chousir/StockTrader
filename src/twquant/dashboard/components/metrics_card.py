@@ -44,7 +44,6 @@ def render_metrics_cards(result: dict, benchmark_result: dict = None) -> None:
             label="最大回撤",
             value=f"{result['max_drawdown']:.1%}",
             is_good=False,
-            invert_color=True,
         )
     with row2[1]:
         _metric_card(
@@ -81,7 +80,6 @@ def render_metrics_cards(result: dict, benchmark_result: dict = None) -> None:
             label="手續費累計",
             value=f"${result.get('total_fees', 0):,.0f}",
             is_good=False,
-            invert_color=True,
         )
     with row3[3]:
         _metric_card(
@@ -96,12 +94,11 @@ def _metric_card(
     value: str,
     delta: str | None = None,
     is_good: bool | None = None,
-    invert_color: bool = False,
 ) -> None:
     with st.container(border=True):
         st.caption(label)
         if is_good is not None:
-            color = ("#EF4444" if is_good else "#22C55E") if invert_color else ("#22C55E" if is_good else "#EF4444")
+            color = "#22C55E" if is_good else "#EF4444"
             st.markdown(f"<h2 style='color:{color};margin:0'>{value}</h2>", unsafe_allow_html=True)
         else:
             st.markdown(f"<h2 style='margin:0'>{value}</h2>", unsafe_allow_html=True)

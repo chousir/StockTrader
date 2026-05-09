@@ -76,6 +76,22 @@ class TWSEBacktestEngine:
         except Exception:
             avg_duration = float("nan")
 
+        # 交易明細
+        trades_list = []
+        try:
+            tr = pf.trades.records_readable
+            for _, row in tr.iterrows():
+                trades_list.append({
+                    "進場日": str(row.get("Entry Timestamp", ""))[:10],
+                    "出場日": str(row.get("Exit Timestamp", ""))[:10],
+                    "進場價": round(float(row.get("Avg Entry Price", 0)), 2),
+                    "出場價": round(float(row.get("Avg Exit Price", 0)), 2),
+                    "報酬率": f"{float(row.get('Return', 0)):.2%}",
+                    "損益（元）": round(float(row.get("PnL", 0)), 0),
+                })
+        except Exception:
+            pass
+
         return {
             "total_return": float(pf.total_return()),
             "max_drawdown": float(pf.max_drawdown()),
@@ -88,6 +104,7 @@ class TWSEBacktestEngine:
             "avg_trade_duration": avg_duration,
             "equity_curve": pf.value().to_dict(),
             "final_value": float(pf.final_value()),
+            "trades": trades_list,
         }
 
     def _cleanup(self) -> None:

@@ -42,6 +42,20 @@ def generate_report(
         except Exception:
             pass
 
+    # 台股手續費估算：買賣各 0.1425%×折扣 + 賣出證交稅 0.3%
+    # 以總成交金額估算：每次交易約為 init_cash，買賣各一次
+    total_trades = metrics.get("total_trades", 0)
+    broker_fee_rate = 0.001425 * 0.6   # 六折
+    sell_tax_rate = 0.003
+    # 每筆交易的平均交易金額估算：以 init_cash 為基準
+    avg_trade_value = init_cash
+    total_fees = total_trades * avg_trade_value * (broker_fee_rate * 2 + sell_tax_rate)
+
+    # 含稅淨報酬：從獲利中扣除賣出時的證交稅（賣出金額 × 0.3%）
+    gross_profit = (final_value - init_cash) if not math.isnan(total_return) else 0.0
+    sell_tax = max(gross_profit, 0) * sell_tax_rate
+    net_return_after_tax = (final_value - init_cash - sell_tax) / init_cash if init_cash > 0 else float("nan")
+
     return {
         "strategy_name": strategy_name,
         "benchmark_name": benchmark_name,
@@ -52,22 +66,23 @@ def generate_report(
         # 報酬
         "total_return": total_return,
         "cagr": cagr,
+        "net_return_after_tax": net_return_after_tax,
         # 風險
         "max_drawdown": metrics.get("max_drawdown", float("nan")),
         "sharpe_ratio": metrics.get("sharpe_ratio", float("nan")),
         "sortino_ratio": metrics.get("sortino_ratio", float("nan")),
         "calmar_ratio": metrics.get("calmar_ratio", float("nan")),
         # 交易統計
-        "total_trades": metrics.get("total_trades", 0),
+        "total_trades": total_trades,
         "win_rate": metrics.get("win_rate", float("nan")),
         "profit_factor": metrics.get("profit_factor", float("nan")),
         "avg_trade_duration": metrics.get("avg_trade_duration", float("nan")),
-        # 台股特有：含稅估算
-        "estimated_tax": final_value * metrics.get("total_return", 0) * 0.003
-        if total_return > 0
-        else 0.0,
+        # 台股特有：手續費 + 稅務估算
+        "total_fees": total_fees,
+        "sell_tax": sell_tax,
         # 資金曲線
         "equity_curve": metrics.get("equity_curve", {}),
+        "trades": metrics.get("trades", []),
     }
 
 

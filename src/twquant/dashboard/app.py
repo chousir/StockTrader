@@ -54,11 +54,14 @@ def main():
         st.title("twquant 台股量化")
         st.caption(f"手續費折扣：{get_broker_discount():.0%}  初始資金：${get_init_cash():,}")
         stock_id = st.text_input("股票代碼", value="2330", max_chars=6)
+        today = pd.Timestamp.today().normalize()
+        default_end = today - pd.Timedelta(days=1)
+        default_start = default_end - pd.DateOffset(years=1)
         col1, col2 = st.columns(2)
         with col1:
-            start_date = st.date_input("開始日期", value=pd.Timestamp("2024-01-01"))
+            start_date = st.date_input("開始日期", value=default_start)
         with col2:
-            end_date = st.date_input("結束日期", value=pd.Timestamp("2024-12-31"))
+            end_date = st.date_input("結束日期", value=default_end)
         ma_options = st.multiselect(
             "均線週期",
             options=[5, 10, 20, 60],
