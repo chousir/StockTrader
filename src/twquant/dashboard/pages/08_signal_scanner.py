@@ -39,61 +39,28 @@ _STRATEGY_COLORS = {
 # ─────────────────────────────────────────────────────────────
 @st.cache_data(ttl=1800, show_spinner=False)
 def scan_signals(strategy_keys: tuple) -> list[dict]:
-    """對 DB 所有股票的最新 K 棒，套用每個策略，回傳有進場訊號的清單。"""
     import pandas as pd
-    from twquant.data.storage import SQLiteStorage
-    from twquant.strategy.registry import get_strategy
     from twquant.data.universe import get_name, get_sector
-    from twquant.indicators.basic import compute_ma, compute_rsi
+    from twquant.strategy.scanner import scan_universe
 
-    storage = SQLiteStorage(DB_PATH)
-    syms = [s.replace("daily_price/", "") for s in storage.list_symbols()
-            if s.startswith("daily_price/")]
-
-    today = pd.Timestamp.today().normalize()
-    end_str   = (today - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-    start_str = (today - pd.DateOffset(days=300)).strftime("%Y-%m-%d")
-
+    df_raw = scan_universe(list(strategy_keys), db_path=DB_PATH)
+    if df_raw.empty:
+        return []
     results = []
-
-    for sid in syms:
-        df = storage.load(f"daily_price/{sid}", start_date=start_str, end_date=end_str)
-        if df.empty or len(df) < 120:
-            continue
-        df["date"] = pd.to_datetime(df["date"])
-        df = df.sort_values("date").reset_index(drop=True)
-
-        close    = df["close"].astype(float)
-        last_dt  = df["date"].iloc[-1]
-        last_px  = float(close.iloc[-1])
-        ma60_val = float(compute_ma(close, 60).iloc[-1])
-        rsi_val  = float(compute_rsi(close, 14).iloc[-1])
-        vol5     = df["volume"].astype(float).iloc[-5:].mean()
-        vol20    = df["volume"].astype(float).iloc[-20:].mean()
-        vol_ratio = round(vol5 / vol20, 2) if vol20 > 0 else 1.0
-        import math
-        ma60_dist = round((last_px / ma60_val - 1) * 100, 1) if not math.isnan(ma60_val) and ma60_val > 0 else None
-
-        for key in strategy_keys:
-            label = _STRATEGY_LABEL.get(key, key)
-            try:
-                strat = get_strategy(key)
-                entries, _ = strat.generate_signals(df)
-                if len(entries) > 0 and entries[-1]:
-                    results.append({
-                        "代號":    sid,
-                        "名稱":    get_name(sid),
-                        "板塊":    get_sector(sid),
-                        "策略":    label,
-                        "資料截止": last_dt.strftime("%Y-%m-%d"),
-                        "收盤價":  last_px,
-                        "距MA60%": ma60_dist,
-                        "RSI":     round(rsi_val, 1) if not math.isnan(rsi_val) else None,
-                        "量比":    vol_ratio,
-                    })
-            except Exception:
-                pass
-
+    for _, row in df_raw.iterrows():
+        sid = row["代號"]
+        key = row["策略"]
+        results.append({
+            "代號":    sid,
+            "名稱":    get_name(sid),
+            "板塊":    get_sector(sid),
+            "策略":    _STRATEGY_LABEL.get(key, key),
+            "資料截止": row["資料截止"],
+            "收盤價":  row["收盤價"],
+            "距MA60%": row["距MA60%"],
+            "RSI":     row["RSI"],
+            "量比":    row["量比"],
+        })
     return results
 
 

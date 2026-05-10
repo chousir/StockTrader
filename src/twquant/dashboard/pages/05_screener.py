@@ -222,6 +222,49 @@ def run_screener(stock_list: tuple, start: str, end: str) -> list[dict]:
     return sorted(results, key=lambda x: -x['score'])
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _run_alpha_scan(stock_list: tuple, start: str, end: str,
+                    strat_keys: tuple, min_trades: int = 3) -> list[dict]:
+    import pandas as pd
+    from twquant.data.storage import SQLiteStorage
+    from twquant.backtest.engine import TWSEBacktestEngine
+    from twquant.strategy.registry import get_strategy
+    from twquant.data.universe import get_name, get_sector
+
+    storage = SQLiteStorage(DB_PATH)
+    df_bench = storage.load("daily_price/0050", start_date=start, end_date=end)
+    bench_ret = 0.0
+    if not df_bench.empty:
+        p0 = df_bench["close"].astype(float)
+        bench_ret = float(p0.iloc[-1] / p0.iloc[0] - 1)
+
+    rows = []
+    for sid in stock_list:
+        sid = sid.split(":")[0] if ":" in sid else sid
+        df = storage.load(f"daily_price/{sid}", start_date=start, end_date=end)
+        if df.empty or len(df) < 120:
+            continue
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.sort_values("date").reset_index(drop=True)
+        price_s = pd.Series(df["close"].astype(float).values, index=df["date"])
+        for key in strat_keys:
+            try:
+                entries, exits = get_strategy(key).generate_signals(df)
+                if int(entries.sum()) < min_trades:
+                    continue
+                m = TWSEBacktestEngine().run(price_s, entries, exits, init_cash=1_000_000)
+                rows.append({
+                    "代號": sid, "名稱": get_name(sid), "板塊": get_sector(sid),
+                    "策略": key, "總報酬": m["total_return"],
+                    "超額報酬α": m["total_return"] - bench_ret,
+                    "Sharpe": m["sharpe_ratio"], "最大回撤": m["max_drawdown"],
+                    "勝率": m["win_rate"], "交易次數": int(entries.sum()),
+                })
+            except Exception:
+                pass
+    return sorted(rows, key=lambda r: -(r["Sharpe"] if r["Sharpe"] == r["Sharpe"] else -99))
+
+
 # ─────────────────────────────────────────────────────────────
 # 主介面
 # ─────────────────────────────────────────────────────────────
@@ -233,12 +276,66 @@ def main():
     from twquant.dashboard.components.global_sidebar import render_global_sidebar
 
     register_twquant_dark_template()
-
-    # 快取清除按鈕（不需要股票/日期，頁面自有篩選邏輯）
     render_global_sidebar(show_stock=False, show_dates=False)
-
-    # 確保背景同步執行緒已啟動
     _start_sync()
+
+    page_mode = st.radio("模式", ["📊 多因子選股", "🎯 Alpha 全宇宙掃描"], horizontal=True, label_visibility="collapsed")
+    st.divider()
+
+    # ══ Alpha 掃描模式 ══
+    if page_mode == "🎯 Alpha 全宇宙掃描":
+        st.title("🎯 Alpha 全宇宙掃描")
+        st.caption("對已選股票池 × 5 種策略跑完整回測，找出最高 Sharpe 機會 | 快取 1 小時")
+        _ALPHA_KEYS = ["momentum_concentrate","volume_breakout","triple_ma_twist","risk_adj_momentum","donchian_breakout"]
+        _ALPHA_LABEL = {"momentum_concentrate":"F動能精選","volume_breakout":"H量價突破",
+                        "triple_ma_twist":"L三線扭轉","risk_adj_momentum":"M RAM動能","donchian_breakout":"N唐奇安"}
+        with st.sidebar:
+            st.header("掃描設定")
+            today = pd.Timestamp.today().normalize()
+            a_start = st.date_input("起始", value=today - pd.DateOffset(years=3), key="alpha_start")
+            a_end   = st.date_input("結束", value=today - pd.Timedelta(days=1), key="alpha_end")
+            a_strats = st.multiselect("策略", _ALPHA_KEYS, default=_ALPHA_KEYS,
+                                      format_func=lambda k: _ALPHA_LABEL.get(k, k))
+            a_min = st.number_input("最少交易次數", 1, 20, 3)
+            mode = st.radio("股票來源", ["產業板塊", "全宇宙", "自訂清單"], horizontal=True)
+            from twquant.data.universe import ANALYST_UNIVERSE, get_name, list_sectors
+            if mode == "產業板塊":
+                sector = st.selectbox("產業", list_sectors())
+                stock_list = tuple(s for s, _ in ANALYST_UNIVERSE[sector])
+            elif mode == "全宇宙":
+                from twquant.data.storage import SQLiteStorage
+                _syms = SQLiteStorage(DB_PATH).list_symbols()
+                stock_list = tuple(s.replace("daily_price/", "") for s in _syms if s.startswith("daily_price/"))
+                st.caption(f"全宇宙：{len(stock_list)} 支")
+            else:
+                raw = st.text_area("自訂清單", value="\n".join(DEFAULT_LIST), height=150)
+                stock_list = tuple(s.strip() for s in raw.strip().split("\n") if s.strip())
+            scan_btn = st.button("🚀 開始掃描", type="primary", use_container_width=True)
+        if not scan_btn:
+            st.info("設定左側參數後點擊「開始掃描」。首次可能需 1-3 分鐘，結果快取 1 小時。")
+            return
+        with st.spinner(f"掃描 {len(stock_list)} 支股票 × {len(a_strats)} 種策略..."):
+            scan_rows = _run_alpha_scan(stock_list, str(a_start), str(a_end), tuple(a_strats), int(a_min))
+        if not scan_rows:
+            st.warning("掃描無結果，請確認 DB 中已有足夠資料（執行 seed_data.py）")
+            return
+        df_scan = pd.DataFrame(scan_rows)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("掃描組合數", len(df_scan))
+        c2.metric("正超額報酬", int((df_scan["超額報酬α"] > 0).sum()))
+        c3.metric("最佳 Sharpe", f"{df_scan['Sharpe'].max():.2f}")
+        c4.metric("最佳超額", f"{df_scan['超額報酬α'].max():.1%}")
+        display = df_scan.copy()
+        for col in ["總報酬", "超額報酬α", "最大回撤"]:
+            display[col] = display[col].apply(lambda v: f"{v:+.1%}")
+        display["Sharpe"] = display["Sharpe"].apply(lambda v: f"{v:.2f}")
+        display["勝率"] = display["勝率"].apply(lambda v: f"{v:.1%}" if v == v else "N/A")
+        display["策略"] = display["策略"].apply(lambda k: _ALPHA_LABEL.get(k, k))
+        st.dataframe(display[["代號","名稱","板塊","策略","總報酬","超額報酬α","Sharpe","最大回撤","勝率","交易次數"]],
+                     use_container_width=True, hide_index=True, height=500)
+        csv = df_scan.to_csv(index=False).encode("utf-8-sig")
+        st.download_button("⬇️ 下載 CSV", csv, f"alpha_{a_start}_{a_end}.csv", "text/csv")
+        return
 
     st.title("🔍 多因子選股工具")
 
