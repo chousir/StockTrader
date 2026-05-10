@@ -37,6 +37,7 @@ def render_watchlist_chips() -> None:
         with cols[i]:
             if st.button(stock_id, key=f"chip_{stock_id}", use_container_width=True):
                 st.session_state["current_stock"] = stock_id
+                st.session_state["g_current_stock"] = stock_id
                 st.rerun()
 
     if len(stocks) > 8:
@@ -61,6 +62,7 @@ def render_watchlist_sidebar() -> None:
                     use_container_width=True,
                 ):
                     st.session_state["current_stock"] = item["stock_id"]
+                    st.session_state["g_current_stock"] = item["stock_id"]
                     st.rerun()
             with col_btn:
                 if st.button("✕", key=f"rm_wl_{item['stock_id']}"):

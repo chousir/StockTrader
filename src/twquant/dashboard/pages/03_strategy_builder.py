@@ -182,21 +182,19 @@ def main():
     from twquant.backtest.report import generate_report
     from twquant.dashboard.components.metrics_card import render_metrics_cards
     from twquant.dashboard.config import get_init_cash, get_broker_discount
+    from twquant.dashboard.components.global_sidebar import render_global_sidebar
+
+    # 全域 sidebar：股票 + 日期 + 快取清除
+    ctx = render_global_sidebar(show_stock=True, show_dates=True, default_years=1)
+    stock_id = ctx["stock_id"]
+    start = ctx["start_date"]
+    end = ctx["end_date"]
 
     strategy_info = list_strategies()
     strategy_map = {s["name"]: s["key"] for s in strategy_info}
 
     with st.sidebar:
         st.header("策略設定")
-        stock_id = st.text_input("股票代碼", value="2330")
-
-        # 動態日期：最近 1 年
-        today = pd.Timestamp.today().normalize()
-        default_end = today - pd.Timedelta(days=1)
-        default_start = default_end - pd.DateOffset(years=1)
-        start = st.date_input("開始日期", value=default_start)
-        end = st.date_input("結束日期", value=default_end)
-
         strategy_label = st.selectbox("策略選擇", [s["name"] for s in strategy_info])
         strategy_key = strategy_map[strategy_label]
         selected_info = next(s for s in strategy_info if s["key"] == strategy_key)

@@ -58,6 +58,9 @@ def main():
     import plotly.graph_objects as go
     from twquant.data.universe import ANALYST_UNIVERSE, get_name
     from twquant.data.storage import SQLiteStorage
+    from twquant.dashboard.components.global_sidebar import render_global_sidebar
+
+    render_global_sidebar(show_stock=False, show_dates=False)
 
     render_tv_ticker_tape()
     st.title("🏛️ 市場總覽")

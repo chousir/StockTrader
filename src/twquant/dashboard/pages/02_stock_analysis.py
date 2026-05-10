@@ -186,6 +186,16 @@ def main():
         render_watchlist_button,
     )
     from twquant.dashboard.components.tradingview_widgets import render_tv_technicals
+    from twquant.dashboard.components.global_sidebar import render_global_sidebar
+
+    # 全域 sidebar：日期 + 快取清除（股票由 smart_search 控制）
+    ctx = render_global_sidebar(show_stock=False, show_dates=True)
+    start_date = ctx["start_date"]
+    end_date = ctx["end_date"]
+
+    with st.sidebar:
+        st.divider()
+        st.caption("📌 關注清單")
 
     # ── Layer 1：全局導覽（搜尋 + 關注清單快捷 + 狀態） ──
     col_search, col_chips, col_status = st.columns([4, 4, 1])
@@ -198,22 +208,15 @@ def main():
 
     stock_id = (
         searched_id
+        or st.session_state.get("g_current_stock")
         or st.session_state.get("current_stock")
         or "2330"
     )
 
-    st.divider()
-
-    # ── 側邊欄：日期選擇（動態預設最近 1 年）──
     with st.sidebar:
-        st.header("查詢條件")
-        today = pd.Timestamp.today().normalize()
-        default_end = today - pd.Timedelta(days=1)
-        default_start = default_end - pd.DateOffset(years=1)
-        start_date = st.date_input("開始日期", value=default_start)
-        end_date = st.date_input("結束日期", value=default_end)
-        st.divider()
         render_watchlist_button(stock_id)
+
+    st.divider()
 
     # ── 載入資料 ──
     try:

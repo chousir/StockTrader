@@ -230,8 +230,12 @@ def main():
     import plotly.graph_objects as go
     from twquant.dashboard.styles.plotly_theme import register_twquant_dark_template
     from twquant.data.auto_sync import last_sync_info
+    from twquant.dashboard.components.global_sidebar import render_global_sidebar
 
     register_twquant_dark_template()
+
+    # 快取清除按鈕（不需要股票/日期，頁面自有篩選邏輯）
+    render_global_sidebar(show_stock=False, show_dates=False)
 
     # 確保背景同步執行緒已啟動
     _start_sync()

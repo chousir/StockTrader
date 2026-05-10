@@ -102,31 +102,17 @@ def _render_equity_curve(report: dict, start_date: str, end_date: str, height: i
 
 
 def main():
+    import pandas as pd
+    from twquant.dashboard.components.global_sidebar import render_global_sidebar
+
+    # 全域 sidebar：股票 + 日期 + 快取清除
+    ctx = render_global_sidebar(show_stock=True, show_dates=True, default_years=1)
+    stock_id = ctx["stock_id"]
+    start = ctx["start_date"]
+    end = ctx["end_date"]
+
     with st.sidebar:
         st.header("回測設定")
-
-        # 關注清單快速選股
-        try:
-            from twquant.data.watchlist import Watchlist
-            wl_stocks = Watchlist().list_all()
-        except Exception:
-            wl_stocks = []
-
-        if wl_stocks:
-            st.caption("⭐ 關注清單快速選股")
-            wl_choice = st.selectbox("從關注清單選擇", ["（手動輸入）"] + wl_stocks,
-                                      key="wl_stock_select")
-        else:
-            wl_choice = "（手動輸入）"
-
-        default_id = wl_choice if wl_choice != "（手動輸入）" else "2330"
-        stock_id = st.text_input("股票代碼", value=default_id)
-        import pandas as pd
-        today = pd.Timestamp.today().normalize()
-        default_end = today - pd.Timedelta(days=1)
-        default_start = default_end - pd.DateOffset(years=1)
-        start = st.date_input("開始日期", value=default_start)
-        end = st.date_input("結束日期", value=default_end)
         short_w = st.slider("短均線", 3, 30, 5)
         long_w = st.slider("長均線", 10, 120, 20)
         run_btn = st.button("執行回測", type="primary")

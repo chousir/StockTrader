@@ -488,8 +488,15 @@ def main():
     import pandas as pd
     import plotly.graph_objects as go
     from twquant.dashboard.styles.plotly_theme import register_twquant_dark_template
+    from twquant.dashboard.components.global_sidebar import render_global_sidebar
 
     register_twquant_dark_template()
+
+    # 全域 sidebar：股票 + 日期（3 年）+ 快取清除
+    ctx = render_global_sidebar(show_stock=True, show_dates=True, default_years=3)
+    stock_id = ctx["stock_id"]
+    start = ctx["start_date"]
+    end = ctx["end_date"]
 
     st.title("⚔️ 策略實驗室 vs 0050 基準")
     st.caption("5 種已驗證策略 × 全宇宙掃描 | 資料來源：系統 DB | 交易成本已計入")
@@ -502,12 +509,6 @@ def main():
     with tab_single:
         with st.sidebar:
             st.header("回測設定")
-            stock_id = st.text_input("策略標的（股票代碼）", value="2330")
-            today = pd.Timestamp.today().normalize()
-            default_end   = today - pd.Timedelta(days=1)
-            default_start = default_end - pd.DateOffset(years=3)
-            start = st.date_input("開始日期", value=default_start)
-            end   = st.date_input("結束日期", value=default_end)
             selected = st.multiselect(
                 "選擇策略",
                 options=list(STRATEGIES.keys()),

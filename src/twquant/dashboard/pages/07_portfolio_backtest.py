@@ -101,6 +101,9 @@ def main():
     import pandas as pd
     import plotly.graph_objects as go
     from twquant.data.universe import get_name, ANALYST_UNIVERSE
+    from twquant.dashboard.components.global_sidebar import render_global_sidebar
+
+    render_global_sidebar(show_stock=False, show_dates=False)
 
     st.title("🏗️ 產業組合回測")
     st.caption("月度輪動策略：每月評分 → 選 Top-N → 等權重配置 vs 0050 買進持有")

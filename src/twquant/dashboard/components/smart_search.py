@@ -106,6 +106,7 @@ def render_smart_search(key: str = "stock_search") -> str | None:
         stock_id = results[0]["stock_id"]
         _record_recent(stock_id)
         st.session_state["current_stock"] = stock_id
+        st.session_state["g_current_stock"] = stock_id
         return stock_id
 
     if results:
@@ -116,6 +117,7 @@ def render_smart_search(key: str = "stock_search") -> str | None:
             stock_id = chosen.split(" ")[0]
             _record_recent(stock_id)
             st.session_state["current_stock"] = stock_id
+            st.session_state["g_current_stock"] = stock_id
             return stock_id
 
     return None

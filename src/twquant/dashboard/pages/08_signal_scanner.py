@@ -104,8 +104,11 @@ def main():
     import pandas as pd
     import plotly.graph_objects as go
     from twquant.dashboard.styles.plotly_theme import register_twquant_dark_template
+    from twquant.dashboard.components.global_sidebar import render_global_sidebar
 
     register_twquant_dark_template()
+
+    render_global_sidebar(show_stock=False, show_dates=False)
 
     st.title("📡 今日訊號掃描")
     st.caption("全宇宙 × 5 種已驗證策略 — 偵測最新 K 棒進場訊號 | 快取 30 分鐘")
