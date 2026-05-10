@@ -32,7 +32,8 @@ def _load_price_data(sids: tuple, start: str, end: str) -> dict:
 
 @st.cache_data(ttl=1800)
 def _run_portfolio(sids: tuple, start: str, end: str, top_n: int,
-                   rebal_freq: str = "ME", market_filter: bool = False):
+                   rebal_freq: str = "ME", market_filter: bool = False,
+                   strategy_keys: tuple | None = None):
     import pandas as pd
     import numpy as np
     from twquant.backtest.portfolio import run_portfolio_backtest
@@ -45,7 +46,7 @@ def _run_portfolio(sids: tuple, start: str, end: str, top_n: int,
 
     result = run_portfolio_backtest(price_data, start, end, top_n=top_n,
                                     rebal_freq=rebal_freq, market_filter=market_filter,
-                                    market_sid="0050")
+                                    market_sid="0050", strategy_keys=strategy_keys)
 
     # 0050 benchmark
     storage = SQLiteStorage(DB_PATH)
@@ -140,6 +141,30 @@ def main():
         rebal_freq = "ME" if rebal_mode == "月度（穩健）" else "W-FRI"
         market_filter = st.toggle("啟用市場濾網（0050<MA60 時全倉現金）", value=False,
                                    help="熊市自動停倉，防止在空頭市場中持續虧損")
+
+        st.divider()
+        selection_mode = st.radio(
+            "換倉依據",
+            ["多因子評分（預設）", "策略訊號篩選"],
+            horizontal=True,
+            help="策略訊號模式：換倉時只考慮有進場訊號的股票，再從中選評分最高的 Top-N",
+        )
+        _STRAT_KEYS = ["momentum_concentrate", "volume_breakout", "triple_ma_twist",
+                       "risk_adj_momentum", "donchian_breakout"]
+        _STRAT_LABELS = {"momentum_concentrate": "F｜動能精選", "volume_breakout": "H｜量價突破",
+                         "triple_ma_twist": "L｜三線扭轉", "risk_adj_momentum": "M｜RAM動能",
+                         "donchian_breakout": "N｜唐奇安突破"}
+        if selection_mode == "策略訊號篩選":
+            selected_strategies = st.multiselect(
+                "訊號策略（任一觸發即納入候選）",
+                options=_STRAT_KEYS,
+                default=_STRAT_KEYS,
+                format_func=lambda k: _STRAT_LABELS.get(k, k),
+            )
+            strategy_keys_arg = tuple(selected_strategies) if selected_strategies else None
+        else:
+            strategy_keys_arg = None
+
         run_btn = st.button("執行組合回測", type="primary", use_container_width=True)
 
     if not run_btn:
@@ -185,8 +210,10 @@ def main():
         st.warning("請選擇至少一支股票")
         return
 
-    with st.spinner(f"回測 {len(selected_sids)} 支股票，{rebal_mode} Top-{top_n}..."):
-        result, bm = _run_portfolio(tuple(selected_sids), str(start), str(end), top_n, rebal_freq, market_filter)
+    mode_label = "策略訊號" if strategy_keys_arg else "多因子評分"
+    with st.spinner(f"回測 {len(selected_sids)} 支股票，{rebal_mode} Top-{top_n}（{mode_label}）..."):
+        result, bm = _run_portfolio(tuple(selected_sids), str(start), str(end), top_n, rebal_freq,
+                                    market_filter, strategy_keys_arg)
 
     if result is None:
         st.error("無法載入資料，請確認股票已入庫（可先執行種子腳本）")
@@ -196,7 +223,7 @@ def main():
     alpha = result["total_return"] - bench_ret
 
     # ── 摘要指標卡 ──
-    st.subheader(f"📊 回測結果摘要（{len(selected_sids)}支 → 每期持有Top-{top_n}）")
+    st.subheader(f"📊 回測結果摘要（{len(selected_sids)}支 → 每期持有Top-{top_n} | {mode_label}）")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("組合總報酬", f"{result['total_return']:.1%}")
     c2.metric("0050 基準", f"{bench_ret:.1%}")

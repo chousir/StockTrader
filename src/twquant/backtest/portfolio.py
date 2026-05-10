@@ -167,6 +167,7 @@ def run_portfolio_backtest(
     is_etf: bool = False,
     market_filter: bool = False,           # True=啟用市場趨勢濾網（0050<MA60 時全倉現金）
     market_sid: str = "0050",             # 濾網基準指數
+    strategy_keys: tuple[str, ...] | None = None,  # 非 None 時以訊號篩選候選股
 ) -> dict:
     """
     月度輪動回測。
@@ -194,12 +195,18 @@ def run_portfolio_backtest(
     # ── 對每支股票，建立以 date 為 index 的收盤價 Series ──
     price_series: dict[str, pd.Series] = {}
     vol_series: dict[str, pd.Series] = {}
+    high_series: dict[str, pd.Series] = {}
+    low_series: dict[str, pd.Series] = {}
     for sid, df in price_data.items():
         df2 = df.copy()
         df2["date"] = pd.to_datetime(df2["date"])
         df2 = df2.set_index("date").sort_index()
         price_series[sid] = df2["close"].astype(float).reindex(all_dates, method="ffill")
         vol_series[sid]   = df2["volume"].astype(float).reindex(all_dates, method="ffill")
+        if "high" in df2.columns:
+            high_series[sid] = df2["high"].astype(float).reindex(all_dates, method="ffill")
+        if "low" in df2.columns:
+            low_series[sid] = df2["low"].astype(float).reindex(all_dates, method="ffill")
 
     # ── 建立再平衡日期清單（月底交易日） ──
     rebal_dates: list[pd.Timestamp] = (
@@ -242,9 +249,44 @@ def run_portfolio_backtest(
                         equity_values.append((dt, portfolio_value(dt)))
                         continue  # 跳過選股
 
+            # 0. 策略訊號篩選（若有指定 strategy_keys）
+            signal_pool: set[str] | None = None
+            if strategy_keys:
+                from twquant.strategy.registry import get_strategy
+                signal_pool = set()
+                for sid in price_series:
+                    cl = price_series[sid].loc[:dt].dropna()
+                    if len(cl) < 120:
+                        continue
+                    hi = high_series.get(sid, pd.Series(dtype=float)).loc[:dt].dropna()
+                    lo = low_series.get(sid, pd.Series(dtype=float)).loc[:dt].dropna()
+                    vl = vol_series[sid].loc[:dt].dropna()
+                    common_idx = cl.index.intersection(hi.index).intersection(lo.index).intersection(vl.index)
+                    if len(common_idx) < 120:
+                        continue
+                    df_strat = pd.DataFrame({
+                        "date": common_idx,
+                        "close": cl.loc[common_idx].values,
+                        "high": hi.loc[common_idx].values,
+                        "low": lo.loc[common_idx].values,
+                        "volume": vl.loc[common_idx].values,
+                    }).reset_index(drop=True)
+                    for key in strategy_keys:
+                        try:
+                            entries, _ = get_strategy(key).generate_signals(df_strat)
+                            if len(entries) > 0 and entries[-1]:
+                                signal_pool.add(sid)
+                                break
+                        except Exception:
+                            pass
+                if not signal_pool:
+                    signal_pool = None  # 無訊號時回退到全池
+
             # 1. 對所有股票評分（用截至今日的過去資料）
             scores: dict[str, float] = {}
             for sid in price_series:
+                if signal_pool is not None and sid not in signal_pool:
+                    continue
                 cl = price_series[sid].loc[:dt].dropna()
                 vl = vol_series[sid].loc[:dt].dropna()
                 if len(cl) < 60 or cl.iloc[-1] <= 0:

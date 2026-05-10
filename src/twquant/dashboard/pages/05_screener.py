@@ -179,6 +179,26 @@ def compute_score(df):
     }
 
 
+def _check_strategies(df) -> list[str]:
+    """檢查最新 K 棒是否觸發 5 種生產策略進場訊號，回傳觸發的標籤清單。"""
+    from twquant.strategy.registry import get_strategy
+    if len(df) < 120:
+        return []
+    triggered = []
+    for key, label in [
+        ("momentum_concentrate", "F"), ("volume_breakout", "H"),
+        ("triple_ma_twist", "L"),      ("risk_adj_momentum", "M"),
+        ("donchian_breakout", "N"),
+    ]:
+        try:
+            entries, _ = get_strategy(key).generate_signals(df)
+            if len(entries) > 0 and entries[-1]:
+                triggered.append(label)
+        except Exception:
+            pass
+    return triggered
+
+
 @st.cache_data(ttl=1800)
 def run_screener(stock_list: tuple, start: str, end: str) -> list[dict]:
     from twquant.data.universe import get_name
@@ -195,6 +215,7 @@ def run_screener(stock_list: tuple, start: str, end: str) -> list[dict]:
         try:
             r = compute_score(df)
             r['sid'] = sid; r['name'] = name
+            r['strategy_signals'] = _check_strategies(df)
             results.append(r)
         except Exception:
             pass
@@ -335,6 +356,7 @@ def main():
             "ATR%": f"{r['atr_pct']:.1f}%",
             "年化波動": f"{r['vol_20d']:.1f}%",
             "停損": f"{r['stop_loss']:.2f}", "目標R1": f"{r['target']:.2f}",
+            "觸發策略": " ".join(r.get("strategy_signals", [])),
             "訊號": " | ".join(r.get("signals", [])),
         })
     csv_str = pd.DataFrame(csv_rows).to_csv(index=False, encoding="utf-8-sig")
@@ -383,6 +405,9 @@ def main():
                     score_color = '#22C55E' if r['score'] >= 8 else '#FBBF24'
                     st.markdown(f"<span style='color:{score_color};font-size:1.2rem;font-weight:bold'>得分：{r['score']}</span>",
                                 unsafe_allow_html=True)
+                    sigs = r.get("strategy_signals", [])
+                    if sigs:
+                        st.markdown(f"📡 **策略訊號：{'  '.join(sigs)}**")
                 col_m1.metric("現價",  f"{r['price']:.2f}")
                 col_m2.metric("RSI",   f"{r['rsi']:.1f}")
                 col_m3.metric("週報酬", ret5_s)
@@ -407,6 +432,7 @@ def main():
                 '週漲跌': f"{r['ret5']:+.1%}" if r['ret5'] and not math.isnan(r['ret5']) else "N/A",
                 '量比': f"{r['vol_ratio']:.2f}x",
                 '得分': r['score'],
+                '觸發策略': ' '.join(r.get('strategy_signals', [])),
                 '關鍵訊號': ' | '.join(r['signals'][:3]),
             })
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
