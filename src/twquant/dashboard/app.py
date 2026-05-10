@@ -196,6 +196,15 @@ def main():
         st.caption(f"FinMind Token：{'✅ 已設定' if health['has_token'] else '⚠️ 未設定'}")
         if not health["has_token"]:
             st.warning("Token 未設定，無法即時拉取新資料", icon="⚠️")
+        try:
+            from twquant.data.alerts import unread_count
+            n_unread = unread_count(DB_PATH)
+            if n_unread > 0:
+                st.warning(f"🔔 未讀告警 **{n_unread}** 筆 — 前往 🔔 告警中心查看")
+            else:
+                st.caption("🔔 告警：無未讀")
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
