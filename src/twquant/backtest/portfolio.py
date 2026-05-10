@@ -19,11 +19,17 @@ from loguru import logger
 # ── 因子評分（輕量版，只需價量資料） ──────────────────────────────────────
 
 def _score_stock(close: pd.Series, volume: pd.Series) -> float:
-    """對一支股票的收盤/成交量序列計算多因子評分（-∞ ~ +∞）"""
-    from twquant.indicators.basic import compute_ma, compute_rsi, compute_macd
+    """
+    多因子評分：趨勢 + RSI + MACD + RAM動能 + OBV + StochRSI + 量能比
+    滿分無上限，總體設計：強動能強趨勢約 +10~+15，弱勢約 -2~-5
+    """
+    from twquant.indicators.basic import (
+        compute_ma, compute_rsi, compute_macd,
+        compute_obv, compute_stoch_rsi,
+    )
 
     n = len(close)
-    if n < 60:
+    if n < 120:
         return float("-inf")
 
     price = float(close.iloc[-1])
@@ -32,72 +38,118 @@ def _score_stock(close: pd.Series, volume: pd.Series) -> float:
 
     score = 0.0
 
-    # 1. 趨勢（MA 多頭排列）
+    # ── 1. 趨勢（三線排列：MA5/20/60） ─────────────────────────────────────
     ma20 = float(compute_ma(close, 20).iloc[-1])
     ma60 = float(compute_ma(close, 60).iloc[-1])
-    if price > ma20 > ma60:
-        score += 3
+    ma120 = float(compute_ma(close, 120).iloc[-1])
+    if price > ma20 > ma60 > ma120:   # 完整四線多頭排列
+        score += 4.0
+    elif price > ma20 > ma60:
+        score += 2.5
     elif price > ma20:
-        score += 1.5
+        score += 1.0
     elif price < ma60:
-        score -= 1
+        score -= 1.5
 
-    # 量能比（先算，RSI 超賣判斷需要）
-    vol5 = float(volume.iloc[-5:].mean())
+    # ── 量能比（先算，供後續使用） ──────────────────────────────────────────
+    vol5  = float(volume.iloc[-5:].mean())
     vol20 = float(volume.iloc[-20:].mean())
     vol_ratio = vol5 / vol20 if vol20 > 0 else 1.0
 
-    # 2. RSI（帶超賣反彈加分）
+    # ── 2. RSI 動能（帶超賣反彈判斷） ──────────────────────────────────────
     rsi = float(compute_rsi(close, 14).iloc[-1])
     if not math.isnan(rsi):
-        if 45 <= rsi <= 65:
-            score += 2.5
-        elif 65 < rsi <= 72:
-            score += 1
-        elif rsi > 72:
-            score -= 2
+        if 50 <= rsi <= 68:
+            score += 2.5   # 強勢健康區間
+        elif 68 < rsi <= 74:
+            score += 1.0   # 偏強但仍合理
+        elif rsi > 74:
+            score -= 2.0   # 超買
         elif rsi < 30:
-            # 強超賣：若同時量增，視為反彈機會
-            score += 2.0 if vol_ratio > 1.2 else 0.5
-        elif rsi < 35:
-            score += 0.5
+            score += 2.0 if vol_ratio > 1.2 else 0.5   # 超賣量增，反彈機會
+        elif rsi < 40:
+            score -= 0.5
         else:
             score -= 0.5
 
-    # 3. MACD
+    # ── 3. MACD 訊號 ────────────────────────────────────────────────────────
     try:
         _, _, hist = compute_macd(close)
         hv = float(hist.iloc[-1])
         hp = float(hist.iloc[-2])
         if not math.isnan(hv):
             if hv > 0 and hp <= 0:
-                score += 3        # 金叉
+                score += 3.0    # 柱狀剛翻正（金叉）
+            elif hv > 0 and hv > hp:
+                score += 1.5    # 柱狀持續擴大
             elif hv > 0:
-                score += 1.5
+                score += 0.5    # 柱狀正但縮小
             elif hv <= 0 and hp > 0:
-                score -= 2        # 死叉
+                score -= 2.0    # 死叉
             else:
-                score -= 1
+                score -= 1.0
     except Exception:
         pass
 
-    # 4. 動能（20 日報酬）：極度超跌時軟化懲罰
-    ret20 = (close.iloc[-1] / close.iloc[-21] - 1) if n >= 21 else float("nan")
-    if not math.isnan(ret20):
-        if ret20 > 0.08:
-            score += 2
-        elif ret20 > 0.03:
-            score += 1
-        elif ret20 < -0.15:
-            score -= 1   # 極度超跌：軟化懲罰（可能是超賣反彈前兆）
-        elif ret20 < -0.05:
-            score -= 1
+    # ── 4. RAM 風險調整動能（本平台核心因子） ───────────────────────────────
+    # RAM = ret₂₀ / (σ₂₀ × √20)；RAM > 0.7 為強勢，> 1.0 為極強
+    if n >= 22:
+        ret20 = close.iloc[-1] / close.iloc[-21] - 1
+        vol20_std = close.pct_change().iloc[-20:].std()
+        if vol20_std > 0 and not math.isnan(vol20_std):
+            ram = ret20 / (vol20_std * math.sqrt(20))
+            if ram > 1.0:
+                score += 3.0
+            elif ram > 0.7:
+                score += 2.0
+            elif ram > 0.3:
+                score += 1.0
+            elif ram < -0.5:
+                score -= 2.0
+            elif ram < 0.0:
+                score -= 0.5
 
-    # 5. 量能比
-    if vol_ratio >= 1.3:
-        score += 1.5
+    # ── 5. OBV 趨勢一致性 ───────────────────────────────────────────────────
+    # OBV MA10 上穿 MA30 為量能配合趨勢的確認
+    try:
+        obv = compute_obv(close, volume)
+        obv_ma10 = float(compute_ma(obv, 10).iloc[-1])
+        obv_ma30 = float(compute_ma(obv, 30).iloc[-1])
+        obv_ma10_prev = float(compute_ma(obv, 10).iloc[-2])
+        obv_ma30_prev = float(compute_ma(obv, 30).iloc[-2])
+        if obv_ma10 > obv_ma30 and obv_ma10_prev <= obv_ma30_prev:
+            score += 2.0   # OBV剛金叉
+        elif obv_ma10 > obv_ma30:
+            score += 1.0   # OBV持續向上
+        elif obv_ma10 < obv_ma30:
+            score -= 1.0
+    except Exception:
+        pass
+
+    # ── 6. StochRSI 超買超賣 ────────────────────────────────────────────────
+    # K/D 均在 20 以下且 K 上穿 D 為超賣反彈訊號
+    try:
+        k, d = compute_stoch_rsi(close)
+        kv = float(k.iloc[-1])
+        dv = float(d.iloc[-1])
+        kp = float(k.iloc[-2])
+        if not math.isnan(kv) and not math.isnan(dv):
+            if kv < 20 and dv < 20 and kv > kp:
+                score += 2.0   # 超賣區域K線翻升
+            elif kv < 20:
+                score += 0.5   # 超賣但尚未翻升
+            elif kv > 80 and dv > 80:
+                score -= 1.5   # 超買區域
+    except Exception:
+        pass
+
+    # ── 7. 量能比 ───────────────────────────────────────────────────────────
+    if vol_ratio >= 1.5:
+        score += 2.0
+    elif vol_ratio >= 1.2:
+        score += 1.0
     elif vol_ratio < 0.7:
-        score -= 1
+        score -= 1.0
 
     return score
 

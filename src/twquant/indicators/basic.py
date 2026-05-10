@@ -90,3 +90,80 @@ def compute_bias(series: pd.Series, window: int = 20) -> pd.Series:
     """乖離率 BIAS = (收盤 - MAn) / MAn × 100"""
     ma = compute_ma(series, window)
     return (series - ma) / ma * 100
+
+
+def compute_williams_r(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    period: int = 14,
+) -> pd.Series:
+    """
+    Williams %R（威廉指標）
+    範圍：-100 ~ 0；-80 以下為超賣，-20 以上為超買。
+    """
+    highest_high = high.rolling(period).max()
+    lowest_low   = low.rolling(period).min()
+    denom = (highest_high - lowest_low).replace(0, float("nan"))
+    return (highest_high - close) / denom * -100
+
+
+def compute_obv(close: pd.Series, volume: pd.Series) -> pd.Series:
+    """
+    On-Balance Volume（能量潮）
+    價漲量加、價跌量減，觀察量價背離。
+    """
+    direction = close.diff().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
+    return (direction * volume).cumsum()
+
+
+def compute_stoch_rsi(
+    series: pd.Series,
+    rsi_period: int = 14,
+    stoch_period: int = 14,
+    smooth_k: int = 3,
+    smooth_d: int = 3,
+) -> tuple[pd.Series, pd.Series]:
+    """
+    Stochastic RSI（隨機RSI）：將RSI再做一次KD處理。
+    K/D 範圍 0~100，更敏感的超買超賣訊號。
+    """
+    rsi = compute_rsi(series, rsi_period)
+    rsi_low  = rsi.rolling(stoch_period).min()
+    rsi_high = rsi.rolling(stoch_period).max()
+    denom = (rsi_high - rsi_low).replace(0, float("nan"))
+    stoch = (rsi - rsi_low) / denom * 100
+    k = stoch.rolling(smooth_k).mean()
+    d = k.rolling(smooth_d).mean()
+    return k, d
+
+
+def compute_vwap(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    volume: pd.Series,
+    window: int = 20,
+) -> pd.Series:
+    """
+    滾動 VWAP（成交量加權平均價，20日窗口）
+    股價站上VWAP為偏多，站下為偏空。
+    """
+    typical = (high + low + close) / 3
+    tpv = typical * volume
+    return tpv.rolling(window).sum() / volume.rolling(window).sum()
+
+
+def compute_donchian(
+    high: pd.Series,
+    low: pd.Series,
+    period: int = 20,
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """
+    唐奇安通道（Donchian Channel）：period 日最高/最低/中線。
+    突破上軌為強勢信號，跌破下軌為弱勢。
+    """
+    upper  = high.rolling(period).max()
+    lower  = low.rolling(period).min()
+    middle = (upper + lower) / 2
+    return upper, middle, lower
