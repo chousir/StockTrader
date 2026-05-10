@@ -517,7 +517,7 @@ def main():
 
         if not run_btn:
             st.info("在左側設定回測標的與策略後，點擊「執行對照回測」")
-            with st.expander("📖 8 種策略說明"):
+            with st.expander("📖 5 種策略說明"):
                 for name, desc in STRATEGY_DESC.items():
                     st.markdown(f"**{name}**  \n{desc}\n")
             return

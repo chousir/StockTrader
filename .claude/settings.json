@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c ' *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/twquant/dashboard/pages/06_vs_benchmark.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "Bash(python -c ' *)",
+      "Skill(update-config)",
+      "Skill(update-config:*)",
+      "Write",
+      "Edit"
+    ]
+  }
+}

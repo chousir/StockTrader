@@ -1,6 +1,11 @@
 """策略註冊表：集中管理所有內建策略"""
 
 from twquant.strategy.base import BaseStrategy
+from twquant.strategy.builtin.momentum_concentrate import MomentumConcentrate
+from twquant.strategy.builtin.volume_breakout import VolumeBreakout
+from twquant.strategy.builtin.triple_ma_twist import TripleMATwist
+from twquant.strategy.builtin.risk_adj_momentum import RiskAdjMomentum
+from twquant.strategy.builtin.donchian_breakout import DonchianBreakout
 from twquant.strategy.builtin.bollinger_breakout import BollingerBreakout
 from twquant.strategy.builtin.ma_crossover import MACrossover
 from twquant.strategy.builtin.macd_divergence import MACDDivergence
@@ -13,6 +18,13 @@ except ImportError:
     _RUST_AVAILABLE = False
 
 _REGISTRY: dict[str, type[BaseStrategy]] = {
+    # ── 已驗證生產策略（超額報酬 > 0 @ 最佳標的） ──
+    "momentum_concentrate": MomentumConcentrate,
+    "volume_breakout": VolumeBreakout,
+    "triple_ma_twist": TripleMATwist,
+    "risk_adj_momentum": RiskAdjMomentum,
+    "donchian_breakout": DonchianBreakout,
+    # ── 基礎教學策略 ──
     "ma_crossover": MACrossover,
     "macd_divergence": MACDDivergence,
     "rsi_reversal": RSIReversal,

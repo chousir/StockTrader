@@ -11,14 +11,29 @@ st.set_page_config(page_title="策略建構器", page_icon="🔧", layout="wide"
 
 @st.cache_data
 def _get_data(stock_id: str, start_date: str, end_date: str):
+    import pandas as pd
+    from twquant.data.storage import SQLiteStorage
+
+    storage = SQLiteStorage("data/twquant.db")
+    df = storage.load(f"daily_price/{stock_id}", start_date=start_date, end_date=end_date)
+    if len(df) >= 60:
+        df["date"] = pd.to_datetime(df["date"])
+        return df.sort_values("date").reset_index(drop=True)
+
+    # DB 資料不足 → CSV 備援 → API 備援
     from twquant.data.providers.csv_local import CsvLocalProvider
     from twquant.data.providers.base import EmptyDataError
-
     try:
         return CsvLocalProvider("data/sample").fetch_daily(stock_id, start_date, end_date)
     except EmptyDataError:
         from twquant.data.providers.finmind import FinMindProvider
         return FinMindProvider().fetch_daily(stock_id, start_date, end_date)
+
+
+_PRODUCTION_STRATEGIES = {
+    "momentum_concentrate", "volume_breakout", "triple_ma_twist",
+    "risk_adj_momentum", "donchian_breakout",
+}
 
 
 def _build_signal_chart(df, entries, exits, strategy_key, strategy_obj):
@@ -39,7 +54,7 @@ def _build_signal_chart(df, entries, exits, strategy_key, strategy_obj):
     if strategy_key == "macd_divergence":
         rows, row_heights = 3, [0.55, 0.20, 0.25]
         subplot_titles = ("K 線圖", "成交量（張）", "MACD")
-    elif strategy_key == "rsi_reversal":
+    elif strategy_key in ("rsi_reversal", ) | _PRODUCTION_STRATEGIES:
         rows, row_heights = 3, [0.55, 0.20, 0.25]
         subplot_titles = ("K 線圖", "成交量（張）", "RSI(14)")
     elif strategy_key == "bollinger_breakout":
@@ -67,13 +82,18 @@ def _build_signal_chart(df, entries, exits, strategy_key, strategy_obj):
         decreasing_fillcolor=TWStockColors.CANDLE_DOWN_FILL,
     ), row=1, col=1)
 
-    # MA 5/20
+    # MA 5/20（全策略）；MA60 加入生產策略
     for p, c in [(5, TWStockColors.MA_5), (20, TWStockColors.MA_20)]:
         if len(df) >= p:
             fig.add_trace(go.Scatter(
                 x=dates, y=compute_ma(close, p), mode="lines",
                 name=f"MA{p}", line=dict(color=c, width=1),
             ), row=1, col=1)
+    if strategy_key in _PRODUCTION_STRATEGIES and len(df) >= 60:
+        fig.add_trace(go.Scatter(
+            x=dates, y=compute_ma(close, 60), mode="lines",
+            name="MA60", line=dict(color=TWStockColors.MA_60, width=1.5),
+        ), row=1, col=1)
 
     # 布林帶 overlay
     if strategy_key == "bollinger_breakout":
@@ -133,12 +153,16 @@ def _build_signal_chart(df, entries, exits, strategy_key, strategy_obj):
             fig.add_trace(go.Bar(x=dates, y=hist, name="MACD柱", marker_color=colors, showlegend=False), row=3, col=1)
             fig.add_trace(go.Scatter(x=dates, y=macd, mode="lines", name="MACD", line=dict(color="#3B82F6", width=1)), row=3, col=1)
             fig.add_trace(go.Scatter(x=dates, y=signal, mode="lines", name="Signal", line=dict(color="#F97316", width=1)), row=3, col=1)
-        elif strategy_key == "rsi_reversal":
+        elif strategy_key in ("rsi_reversal",) | _PRODUCTION_STRATEGIES:
             p = strategy_obj.get_parameters()
-            rsi = compute_rsi(close, p.get("period", 14))
+            rsi_period = p.get("period", 14)
+            rsi = compute_rsi(close, rsi_period)
             fig.add_trace(go.Scatter(x=dates, y=rsi, mode="lines", name="RSI", line=dict(color="#A855F7", width=1.5)), row=3, col=1)
-            for level, dash in [(70, "dash"), (30, "dash"), (50, "dot")]:
-                color = "#EF4444" if level == 70 else ("#22C55E" if level == 30 else "#6B7280")
+            # 依策略顯示對應的 RSI 閾值線
+            rsi_ob = p.get("rsi_entry", p.get("rsi_cap", p.get("overbought", 70)))
+            rsi_os = p.get("oversold", 30)
+            for level, dash in [(rsi_ob, "dash"), (rsi_os, "dash"), (50, "dot")]:
+                color = "#EF4444" if level == rsi_ob else ("#22C55E" if level == rsi_os else "#6B7280")
                 fig.add_hline(y=level, line_dash=dash, line_color=color, line_width=1, row=3, col=1)
 
     fig.update_layout(
