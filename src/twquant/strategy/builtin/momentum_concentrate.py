@@ -41,6 +41,6 @@ class MomentumConcentrate(BaseStrategy):
         entry_cond = (close > ma) & (ret > self.ret_threshold)
         exit_cond = close < ma * (1 - self.stop_buffer)
 
-        prev_e = entry_cond.shift(1).fillna(False).infer_objects(copy=False).astype(bool)
-        prev_x = exit_cond.shift(1).fillna(False).infer_objects(copy=False).astype(bool)
+        prev_e = entry_cond.shift(1, fill_value=False)
+        prev_x = exit_cond.shift(1, fill_value=False)
         return (entry_cond & ~prev_e).to_numpy().astype(bool), (exit_cond & ~prev_x).to_numpy().astype(bool)

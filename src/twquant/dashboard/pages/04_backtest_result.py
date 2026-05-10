@@ -13,16 +13,23 @@ st.set_page_config(page_title="回測結果", page_icon="📊", layout="wide")
 def _run_backtest(stock_id: str, start_date: str, end_date: str,
                   short_w: int, long_w: int):
     import pandas as pd
-    from twquant.data.providers.csv_local import CsvLocalProvider
+    from twquant.data.storage import SQLiteStorage
     from twquant.backtest.engine import TWSEBacktestEngine
     from twquant.backtest.report import generate_report
     from twquant.strategy.builtin.ma_crossover import MACrossover
 
-    try:
-        df = CsvLocalProvider("data/sample").fetch_daily(stock_id, start_date, end_date)
-    except Exception:
-        from twquant.data.providers.finmind import FinMindProvider
-        df = FinMindProvider().fetch_daily(stock_id, start_date, end_date)
+    storage = SQLiteStorage("data/twquant.db")
+    df = storage.load(f"daily_price/{stock_id}", start_date=start_date, end_date=end_date)
+    if df.empty or len(df) < 60:
+        try:
+            from twquant.data.providers.csv_local import CsvLocalProvider
+            from twquant.data.providers.base import EmptyDataError
+            df = CsvLocalProvider("data/sample").fetch_daily(stock_id, start_date, end_date)
+        except Exception:
+            from twquant.data.providers.finmind import FinMindProvider
+            df = FinMindProvider().fetch_daily(stock_id, start_date, end_date)
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date").reset_index(drop=True)
 
     df_idx = df.set_index("date")
     strategy = MACrossover(short_window=short_w, long_window=long_w)
