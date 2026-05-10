@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 
-_ROUND_RATIOS = [2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0]
+_ROUND_RATIOS = [2.0, 2.5, 3.0, 4.0, 4.5, 5.0, 6.0, 7.0, 8.0, 10.0]
 _SPLIT_THRESHOLD = 0.35  # 單日跌幅超過 35% 且符合整數比才視為分割
 
 
@@ -20,10 +20,16 @@ def detect_splits(close: np.ndarray) -> list[tuple[int, float]]:
         change = (close[i] - close[i - 1]) / close[i - 1]
         if change < -_SPLIT_THRESHOLD:
             raw_ratio = close[i - 1] / close[i]
+            # For large drops (>60%), use exact ratio if no round match found
+            matched = False
             for n in _ROUND_RATIOS:
-                if abs(raw_ratio - n) / n < 0.08:
+                if abs(raw_ratio - n) / n < 0.12:
                     splits.append((i, n))
+                    matched = True
                     break
+            if not matched and raw_ratio >= 3.0:
+                # Non-standard split: use actual observed ratio
+                splits.append((i, raw_ratio))
     return splits
 
 
