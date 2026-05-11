@@ -230,6 +230,9 @@ def main():
         st.success(f"**{best}** 跑贏 0050，超額 **{alpha:+.1%}** ｜ Sharpe {bm['sharpe_ratio']:.2f} ｜ MDD {bm['max_drawdown']:.1%} ｜ 勝率 {bm['win_rate']:.1%}")
         if bm["max_drawdown"] < -0.25:
             st.warning("注意：最大回撤 > 25%，實際操作需加強停損/部位控制")
+        if st.button(f"⚡ 用最佳策略跑單股回測（{best[:8]}）", use_container_width=True):
+            st.session_state.update({"g_current_stock": stock_id, "current_stock": stock_id})
+            st.switch_page("pages/04_backtest_result.py")
     else:
         st.warning(f"本次設定無策略跑贏 0050（基準 {bench_return:.1%}）。可換標的或策略。")
 

@@ -29,7 +29,6 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-
 @st.cache_data(ttl=1800, show_spinner=False)
 def _market_status() -> dict | None:
     import pandas as pd
@@ -55,7 +54,6 @@ def _market_status() -> dict | None:
         "bull": price > ma20,
     }
 
-
 @st.cache_data(ttl=1800, show_spinner=False)
 def _watchlist_prices(stock_ids: tuple) -> dict:
     import pandas as pd
@@ -77,7 +75,6 @@ def _watchlist_prices(stock_ids: tuple) -> dict:
         prev  = float(close.iloc[-2]) if len(close) >= 2 else price
         out[sid] = {"price": price, "chg_pct": (price / prev - 1) * 100}
     return out
-
 
 @st.cache_data(ttl=900, show_spinner=False)
 def _home_signals(stock_ids: tuple) -> list[dict]:
@@ -109,7 +106,6 @@ def _home_signals(stock_ids: tuple) -> list[dict]:
                 continue
     return results
 
-
 def _system_health() -> dict:
     try:
         from twquant.data.storage import SQLiteStorage
@@ -123,11 +119,9 @@ def _system_health() -> dict:
     except Exception:
         return {"stock_count": 0, "last_date": "讀取失敗", "has_token": False}
 
-
 def main():
     from twquant.data.watchlist import Watchlist
 
-    # ── 市場狀態 ────────────────────────────────────────────────────────────
     status = _market_status()
     if status:
         chg_color  = "#EF4444" if status["chg_pct"] > 0 else ("#22C55E" if status["chg_pct"] < 0 else "#9CA3AF")
@@ -146,7 +140,6 @@ def main():
     else:
         st.caption("市場資料未入庫，請先執行 `python scripts/seed_data.py`")
 
-    # ── 自選股輪盤 ──────────────────────────────────────────────────────────
     wl = Watchlist()
     wl_stocks = wl.list_all()
     scan_targets = tuple((wl_stocks + _POPULAR)[:20])
@@ -169,16 +162,12 @@ def main():
 
     st.divider()
 
-    # ── 今日訊號 + 系統健康 ─────────────────────────────────────────────────
     col_sig, col_health = st.columns([3, 2])
 
     with col_sig:
         st.caption("📡 今日訊號（自選 + 熱門，前 10 筆）")
-        signals = []
-        try:
-            signals = _home_signals(scan_targets)
-        except Exception:
-            pass
+        try: signals = _home_signals(scan_targets)
+        except Exception: signals = []
         if signals:
             import pandas as pd
             st.dataframe(pd.DataFrame(signals[:10]), use_container_width=True,
