@@ -1,9 +1,11 @@
 """告警掃描 Worker — 對所有啟用規則評估觸發條件，寫入 alert_logs"""
 
 from __future__ import annotations
+import os
 import pandas as pd
 
 from twquant.data.alerts import list_rules, log_trigger, init_schema
+from twquant.data.notifiers.discord import DiscordNotifier
 
 DB_PATH = "data/twquant.db"
 
@@ -82,6 +84,7 @@ def evaluate_all_rules(db_path: str = DB_PATH) -> int:
     init_schema(db_path)
     rules = [r for r in list_rules(db_path) if r["enabled"]]
     triggered = 0
+    notifier = DiscordNotifier(os.getenv("DISCORD_WEBHOOK_URL", ""))
     for rule in rules:
         sid = rule["stock_id"]
         if sid in ("WATCHLIST", "UNIVERSE"):
@@ -95,6 +98,7 @@ def evaluate_all_rules(db_path: str = DB_PATH) -> int:
         fired, msg = fn(df, rule["params"])
         if fired:
             log_trigger(rule["id"], sid, f"[{rule['name']}] {msg}", db_path)
+            notifier.notify_alert(rule["name"], sid, msg)
             triggered += 1
     return triggered
 

@@ -32,7 +32,7 @@ def _build_storage():
     return SQLiteStorage("data/twquant.db")
 
 
-async def run_sync(mode: str):
+async def run_sync(mode: str, with_scan: bool = True):
     token = os.getenv("FINMIND_API_TOKEN", "")
     provider = FinMindProvider(token=token)
     storage = _build_storage()
@@ -51,14 +51,29 @@ async def run_sync(mode: str):
         await engine.incremental_sync()
         logger.info("增量同步完成")
 
+    if with_scan and mode == "incremental":
+        try:
+            from twquant.data.daily_scan_worker import run_daily_scan
+            from twquant.data.alert_worker import evaluate_all_rules
+            stats = run_daily_scan()
+            logger.info(f"每日選股完成 {stats}")
+            n = evaluate_all_rules()
+            logger.info(f"告警評估完成 觸發 {n} 筆")
+        except Exception as e:
+            logger.exception(f"掃描/告警階段失敗：{e}")
+
 
 def main():
     parser = argparse.ArgumentParser(description="台股數據排程同步")
     default_mode = os.getenv("SYNC_MODE", "incremental")
     parser.add_argument("--mode", choices=["full", "incremental"], default=default_mode)
+    parser.add_argument(
+        "--no-scan", action="store_true",
+        help="跳過數據同步後的策略掃描與告警評估（預設啟用）",
+    )
     args = parser.parse_args()
 
-    asyncio.run(run_sync(args.mode))
+    asyncio.run(run_sync(args.mode, with_scan=not args.no_scan))
 
 
 if __name__ == "__main__":
