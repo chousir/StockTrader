@@ -39,3 +39,4 @@ data/processed/
 # memray / profiling
 *.bin
 *.html
+!docs/*.html
