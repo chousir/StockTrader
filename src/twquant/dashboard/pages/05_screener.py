@@ -298,10 +298,10 @@ def main():
                                       format_func=lambda k: _ALPHA_LABEL.get(k, k))
             a_min = st.number_input("最少交易次數", 1, 20, 3)
             mode = st.radio("股票來源", ["產業板塊", "全宇宙", "自訂清單"], horizontal=True)
-            from twquant.data.universe import ANALYST_UNIVERSE, get_name, list_sectors
+            from twquant.data.universe import get_name, list_sectors, list_by_sector_db
             if mode == "產業板塊":
                 sector = st.selectbox("產業", list_sectors())
-                stock_list = tuple(s for s, _ in ANALYST_UNIVERSE[sector])
+                stock_list = tuple(s for s, _ in list_by_sector_db(sector))
             elif mode == "全宇宙":
                 from twquant.data.storage import SQLiteStorage
                 _syms = SQLiteStorage(DB_PATH).list_symbols()
@@ -349,7 +349,7 @@ def main():
         f"{mh_txt}  |  {thread_txt}  |  資料來源：系統 DB（FinMind 備援）"
     )
 
-    from twquant.data.universe import ANALYST_UNIVERSE, get_name, list_sectors
+    from twquant.data.universe import get_name, list_sectors, list_by_sector_db
 
     with st.sidebar:
         st.header("篩選設定")
@@ -362,7 +362,7 @@ def main():
 
         if mode == "產業板塊":
             sector = st.selectbox("選擇產業", list_sectors())
-            sector_sids = [sid for sid, _ in ANALYST_UNIVERSE[sector]]
+            sector_sids = [sid for sid, _ in list_by_sector_db(sector)]
             selected_sids = st.multiselect(
                 "股票（可移除）",
                 options=sector_sids,

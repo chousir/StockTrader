@@ -88,12 +88,8 @@ def main():
             default=_STRATEGY_KEYS,
             format_func=lambda k: _STRATEGY_LABEL.get(k, k),
         )
-        filter_sector = st.selectbox(
-            "板塊篩選",
-            ["全部", "半導體", "電子組件/ODM", "PCB/被動元件", "面板/光電",
-             "金融保險", "航運/空運", "電信/網路", "原物料/石化/鋼鐵",
-             "食品/消費/零售", "生技醫療", "ETF"],
-        )
+        from twquant.data.universe import list_sectors
+        filter_sector = st.selectbox("板塊篩選", ["全部"] + list_sectors())
         scan_btn = st.button("🔍 開始掃描", type="primary", use_container_width=True)
 
     if not scan_btn:

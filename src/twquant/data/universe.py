@@ -99,20 +99,72 @@ for _sector, _stocks in ANALYST_UNIVERSE.items():
 
 ALL_SIDS: list[str] = list(_SID_META.keys())
 
+# ── DB-backed lookup cache (loaded once on first use) ───────────────────────
+_DB_META: dict[str, tuple[str, str]] | None = None  # sid → (name, sector)
 
-def get_name(sid: str) -> str:
+
+def _load_db_meta(db_path: str = DB_PATH) -> dict[str, tuple[str, str]]:
+    global _DB_META
+    if _DB_META is not None:
+        return _DB_META
+    try:
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute("SELECT stock_id, stock_name, sector FROM _universe").fetchall()
+        conn.close()
+        _DB_META = {r[0]: (r[1] or r[0], r[2] or "未分類") for r in rows}
+    except Exception:
+        _DB_META = {}
+    return _DB_META
+
+
+def get_name(sid: str, db_path: str = DB_PATH) -> str:
+    meta = _load_db_meta(db_path)
+    if sid in meta:
+        return meta[sid][0]
     return _SID_META.get(sid, (sid, ""))[0]
 
 
-def get_sector(sid: str) -> str:
+def get_sector(sid: str, db_path: str = DB_PATH) -> str:
+    meta = _load_db_meta(db_path)
+    if sid in meta:
+        return meta[sid][1]
     return _SID_META.get(sid, ("", "未分類"))[1]
 
 
-def list_sectors() -> list[str]:
+def list_sectors(db_path: str = DB_PATH) -> list[str]:
+    try:
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute(
+            "SELECT sector, COUNT(*) cnt FROM _universe WHERE sector != '' "
+            "GROUP BY sector ORDER BY cnt DESC"
+        ).fetchall()
+        conn.close()
+        if rows:
+            return [r[0] for r in rows]
+    except Exception:
+        pass
     return list(ANALYST_UNIVERSE.keys())
 
 
 def list_by_sector(sector: str) -> list[tuple[str, str]]:
+    return ANALYST_UNIVERSE.get(sector, [])
+
+
+def list_by_sector_db(sector: str, db_path: str = DB_PATH) -> list[tuple[str, str]]:
+    """Return (sid, name) pairs for a sector, limited to stocks with daily_price in DB."""
+    try:
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute(
+            "SELECT u.stock_id, u.stock_name FROM _universe u "
+            "JOIN _symbols s ON s.name = 'daily_price/' || u.stock_id "
+            "WHERE u.sector = ? ORDER BY u.stock_id",
+            (sector,),
+        ).fetchall()
+        conn.close()
+        if rows:
+            return [(r[0], r[1] or r[0]) for r in rows]
+    except Exception:
+        pass
     return ANALYST_UNIVERSE.get(sector, [])
 
 
