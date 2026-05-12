@@ -81,11 +81,19 @@ def _render_indicator_chart(df):
 
 @st.cache_data(ttl=3600)
 def _load_institutional(stock_id: str, start_date: str, end_date: str):
+    from twquant.data.storage import SQLiteStorage
+    storage = SQLiteStorage(DB_PATH)
+    df_db = storage.load(f"institutional/{stock_id}", start_date=start_date, end_date=end_date)
+    if not df_db.empty:
+        return df_db
     try:
         from twquant.data.providers.finmind import FinMindProvider
         from twquant.dashboard.config import get_finmind_token
         api = FinMindProvider(token=get_finmind_token() or "")
-        return api.fetch_institutional(stock_id, start_date, end_date)
+        df_api = api.fetch_institutional(stock_id, start_date, end_date)
+        if df_api is not None and not df_api.empty:
+            storage.upsert(f"institutional/{stock_id}", df_api)
+        return df_api
     except Exception:
         return None
 
@@ -93,6 +101,12 @@ def _load_institutional(stock_id: str, start_date: str, end_date: str):
 @st.cache_data(ttl=3600)
 def _load_monthly_revenue(stock_id: str, start_date: str):
     import pandas as pd
+    from twquant.data.storage import SQLiteStorage
+    storage = SQLiteStorage(DB_PATH)
+    df_db = storage.load(f"monthly_revenue/{stock_id}", start_date=start_date)
+    if not df_db.empty:
+        df_db["date"] = pd.to_datetime(df_db["date"])
+        return df_db.sort_values("date").reset_index(drop=True)
     try:
         from twquant.data.providers.finmind import FinMindProvider
         from twquant.dashboard.config import get_finmind_token
@@ -103,6 +117,7 @@ def _load_monthly_revenue(stock_id: str, start_date: str):
             return None
         raw["date"] = pd.to_datetime(raw["date"])
         raw = raw.sort_values("date").reset_index(drop=True)
+        storage.upsert(f"monthly_revenue/{stock_id}", raw)
         return raw
     except Exception:
         return None
@@ -111,6 +126,12 @@ def _load_monthly_revenue(stock_id: str, start_date: str):
 @st.cache_data(ttl=3600)
 def _load_per_pbr(stock_id: str, start_date: str):
     import pandas as pd
+    from twquant.data.storage import SQLiteStorage
+    storage = SQLiteStorage(DB_PATH)
+    df_db = storage.load(f"per_pbr/{stock_id}", start_date=start_date)
+    if not df_db.empty:
+        df_db["date"] = pd.to_datetime(df_db["date"])
+        return df_db.sort_values("date").reset_index(drop=True)
     try:
         from twquant.data.providers.finmind import FinMindProvider
         from twquant.dashboard.config import get_finmind_token
@@ -121,6 +142,7 @@ def _load_per_pbr(stock_id: str, start_date: str):
             return None
         raw["date"] = pd.to_datetime(raw["date"])
         raw = raw.sort_values("date").reset_index(drop=True)
+        storage.upsert(f"per_pbr/{stock_id}", raw)
         return raw
     except Exception:
         return None

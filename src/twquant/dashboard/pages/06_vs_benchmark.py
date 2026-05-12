@@ -46,11 +46,14 @@ _STRAT_DESC = {
 
 
 @st.cache_data(ttl=1800)
-def _load_from_db(sid: str, start: str, end: str):
+def _load_from_db(sid: str, start: str, end: str, use_adj: bool = False):
     import pandas as pd
     from twquant.data.storage import SQLiteStorage
     storage = SQLiteStorage(DB_PATH)
-    df = storage.load(f"daily_price/{sid}", start_date=start, end_date=end)
+    ns = f"daily_adj/{sid}" if use_adj else f"daily_price/{sid}"
+    df = storage.load(ns, start_date=start, end_date=end)
+    if df.empty and use_adj:
+        df = storage.load(f"daily_price/{sid}", start_date=start, end_date=end)
     if df.empty:
         return df
     df["date"] = pd.to_datetime(df["date"])
@@ -58,13 +61,14 @@ def _load_from_db(sid: str, start: str, end: str):
 
 
 @st.cache_data(ttl=1800)
-def run_comparison(stock_id: str, start: str, end: str, selected_keys: tuple):
+def run_comparison(stock_id: str, start: str, end: str, selected_keys: tuple,
+                   use_adj: bool = False):
     import pandas as pd
     import numpy as np
     from twquant.backtest.engine import TWSEBacktestEngine
     from twquant.strategy.registry import get_strategy
 
-    df = _load_from_db(stock_id, start, end)
+    df = _load_from_db(stock_id, start, end, use_adj)
     df_bench = _load_from_db("0050", start, end)
     if df.empty or len(df) < 60 or df_bench.empty:
         return None
@@ -138,6 +142,11 @@ def main():
             default=_STRAT_KEYS,
             format_func=lambda k: _STRAT_LABEL.get(k, k),
         )
+        use_adj = st.checkbox(
+            "✅ 使用還原權息",
+            value=False,
+            help="需先執行 seed_data.py --include adj",
+        )
         run_btn = st.button("▶ 執行對照回測", type="primary", use_container_width=True)
 
     st.title("⚔️ 策略 vs 0050 基準")
@@ -155,7 +164,7 @@ def main():
         return
 
     with st.spinner("回測中..."):
-        out = run_comparison(stock_id, str(start), str(end), tuple(selected))
+        out = run_comparison(stock_id, str(start), str(end), tuple(selected), use_adj)
 
     if out is None:
         st.error(f"無法載入 {stock_id} 或 0050 資料，請先執行種子腳本入庫。")

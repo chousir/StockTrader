@@ -23,7 +23,8 @@ _STRAT_LABEL = {
 
 @st.cache_data
 def _run_backtest(stock_id: str, start_date: str, end_date: str,
-                  strategy_key: str, short_w: int = 5, long_w: int = 20):
+                  strategy_key: str, short_w: int = 5, long_w: int = 20,
+                  use_adj: bool = False):
     import pandas as pd
     from twquant.data.storage import SQLiteStorage
     from twquant.backtest.engine import TWSEBacktestEngine
@@ -31,7 +32,10 @@ def _run_backtest(stock_id: str, start_date: str, end_date: str,
     from twquant.strategy.registry import get_strategy
 
     storage = SQLiteStorage("data/twquant.db")
-    df = storage.load(f"daily_price/{stock_id}", start_date=start_date, end_date=end_date)
+    ns = f"daily_adj/{stock_id}" if use_adj else f"daily_price/{stock_id}"
+    df = storage.load(ns, start_date=start_date, end_date=end_date)
+    if use_adj and df.empty:
+        df = storage.load(f"daily_price/{stock_id}", start_date=start_date, end_date=end_date)
     if df.empty or len(df) < 60:
         try:
             from twquant.data.providers.csv_local import CsvLocalProvider
@@ -130,6 +134,11 @@ def main():
         if strategy_key == "ma_crossover":
             short_w = st.slider("短均線", 3, 30, 5)
             long_w = st.slider("長均線", 10, 120, 20)
+        use_adj = st.checkbox(
+            "✅ 使用還原權息收盤價",
+            value=False,
+            help="需先執行 python scripts/seed_data.py --include adj --stocks <代號>",
+        )
         run_btn = st.button("執行回測", type="primary")
 
     if not run_btn:
@@ -138,7 +147,7 @@ def main():
 
     with st.spinner("回測執行中..."):
         report, df = _run_backtest(
-            stock_id, str(start), str(end), strategy_key, short_w, long_w
+            stock_id, str(start), str(end), strategy_key, short_w, long_w, use_adj
         )
 
     # ── Layer 1：策略摘要 ──

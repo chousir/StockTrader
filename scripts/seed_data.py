@@ -84,6 +84,12 @@ def main():
                         help="增量模式：從 DB HWM 接續下載")
     parser.add_argument("--skip-existing", action="store_true",
                         help="跳過 DB 中已有完整資料的股票（比 --incremental 更激進）")
+    parser.add_argument(
+        "--include", nargs="+",
+        choices=["institutional", "revenue", "per", "adj"],
+        default=[],
+        help="額外下載的資料類型（institutional revenue per adj），預設只下載 daily_price",
+    )
     args = parser.parse_args()
 
     # 決定股票清單
@@ -151,6 +157,57 @@ def main():
 
     logger.info(f"完成：成功 {ok}，跳過 {skip}，失敗 {fail}（共 {total} 支）")
     logger.info(f"DB 目前共 {len(storage.list_symbols())} 支")
+
+    if not args.include:
+        return
+
+    # ── 額外資料類型 ──────────────────────────────────────────────────────
+    include = set(args.include)
+    logger.info(f"開始下載額外資料類型：{include}")
+    from twquant.data.universe import init_universe_table
+    init_universe_table(DB_PATH)
+
+    for i, stock_id in enumerate(stock_list, 1):
+        if "institutional" in include:
+            try:
+                df_inst = provider.fetch_institutional(stock_id, args.start, today)
+                if df_inst is not None and not df_inst.empty:
+                    storage.upsert(f"institutional/{stock_id}", df_inst)
+                    logger.debug(f"[{i}/{total}] {stock_id}: 法人 {len(df_inst)} 筆")
+            except Exception as e:
+                logger.debug(f"[{i}/{total}] {stock_id}: 法人失敗 {e}")
+
+        if "revenue" in include:
+            try:
+                raw = provider._api.taiwan_stock_month_revenue(
+                    stock_id=stock_id, start_date=args.start)
+                if raw is not None and not raw.empty:
+                    storage.upsert(f"monthly_revenue/{stock_id}", raw)
+                    logger.debug(f"[{i}/{total}] {stock_id}: 月營收 {len(raw)} 筆")
+            except Exception as e:
+                logger.debug(f"[{i}/{total}] {stock_id}: 月營收失敗 {e}")
+
+        if "per" in include:
+            try:
+                raw = provider._api.taiwan_stock_per_pbr(
+                    stock_id=stock_id, start_date=args.start)
+                if raw is not None and not raw.empty:
+                    storage.upsert(f"per_pbr/{stock_id}", raw)
+                    logger.debug(f"[{i}/{total}] {stock_id}: PER {len(raw)} 筆")
+            except Exception as e:
+                logger.debug(f"[{i}/{total}] {stock_id}: PER失敗 {e}")
+
+        if "adj" in include:
+            try:
+                raw = provider._api.taiwan_stock_daily_adjust(
+                    stock_id=stock_id, start_date=args.start, end_date=today)
+                if raw is not None and not raw.empty:
+                    storage.upsert(f"daily_adj/{stock_id}", raw)
+                    logger.debug(f"[{i}/{total}] {stock_id}: 還原權息 {len(raw)} 筆")
+            except Exception as e:
+                logger.debug(f"[{i}/{total}] {stock_id}: 還原權息失敗 {e}")
+
+    logger.info(f"額外資料下載完成")
 
 
 if __name__ == "__main__":
