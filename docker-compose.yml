@@ -11,6 +11,7 @@ services:
     environment:
       - FINMIND_API_TOKEN=${FINMIND_API_TOKEN:-}
       - ARCTICDB_URI=lmdb:///app/data/arcticdb
+      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
       - TZ=Asia/Taipei
     restart: unless-stopped
 

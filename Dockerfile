@@ -27,7 +27,7 @@ RUN cd rust/twquant-core && maturin build --release --out /build/wheels
 # ============================================================
 # Stage 2: Python 運行階段
 # ============================================================
-FROM python:3.12-slim-bookworm AS runtime
+FROM python:3.11-slim-bookworm AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 curl && \
