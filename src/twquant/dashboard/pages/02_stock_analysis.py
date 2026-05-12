@@ -249,6 +249,79 @@ def main():
             s3.metric("區間漲跌幅", f"{period_ret:+.2f}%")
             s4.metric("日均成交量", f"{df['volume'].mean()/1000:,.0f} 張")
 
+        # ── RS 相對強弱 vs 0050 ──
+        with st.expander("📡 RS 相對強弱（vs 0050）"):
+            import plotly.graph_objects as go
+            df_bench = _load_daily("0050", str(start_date), str(end_date))
+            if df_bench is not None and not df_bench.empty:
+                s_close = df.set_index("date")["close"].astype(float)
+                b_close = df_bench.set_index("date")["close"].astype(float)
+                common = s_close.index.intersection(b_close.index)
+                if len(common) >= 2:
+                    s_norm = s_close[common] / float(s_close[common].iloc[0])
+                    b_norm = b_close[common] / float(b_close[common].iloc[0])
+                    rs = (s_norm / b_norm).reset_index()
+                    rs.columns = ["date", "RS"]
+                    rs60_high = float(rs["RS"].iloc[-60:].max()) if len(rs) >= 60 else float(rs["RS"].max())
+                    fig_rs = go.Figure()
+                    fig_rs.add_trace(go.Scatter(x=rs["date"], y=rs["RS"], name="RS",
+                        line=dict(color="#F97316", width=1.8)))
+                    fig_rs.add_hline(y=1.0, line_dash="dash", line_color="#6B7280", line_width=1)
+                    if len(rs) >= 60:
+                        fig_rs.add_hline(y=rs60_high, line_dash="dot", line_color="#EF4444",
+                                         annotation_text="近60日RS高點", line_width=1)
+                    fig_rs.update_layout(height=240, margin=dict(l=40,r=20,t=20,b=20),
+                                         hovermode="x unified", yaxis_title="RS (>1 跑贏大盤)")
+                    st.plotly_chart(fig_rs, use_container_width=True)
+                    st.caption(f"RS > 1 代表跑贏 0050 基準。目前 RS = {float(rs['RS'].iloc[-1]):.3f}")
+                else:
+                    st.caption("RS 計算需要個股與 0050 有共同交易日")
+            else:
+                st.caption("0050 資料未入庫，無法計算 RS")
+
+        # ── Beta + 對大盤敏感度 ──
+        with st.expander("📐 Beta + 90 日相關性（vs 0050）"):
+            import plotly.graph_objects as go
+            df_bench = _load_daily("0050", str(start_date), str(end_date))
+            if df_bench is not None and not df_bench.empty:
+                s_close = df.set_index("date")["close"].astype(float)
+                b_close = df_bench.set_index("date")["close"].astype(float)
+                common = s_close.index.intersection(b_close.index)
+                if len(common) >= 30:
+                    s_ret = s_close[common].pct_change().dropna()
+                    b_ret = b_close[common].pct_change().dropna()
+                    common2 = s_ret.index.intersection(b_ret.index)
+                    s_r, b_r = s_ret[common2].values, b_ret[common2].values
+                    import numpy as np
+                    beta = float(np.cov(s_r, b_r)[0, 1] / np.var(b_r)) if np.var(b_r) > 0 else float("nan")
+                    corr90 = float(pd.Series(s_r[-90:]).corr(pd.Series(b_r[-90:]))) if len(s_r) >= 90 else float(pd.Series(s_r).corr(pd.Series(b_r)))
+                    b1, b2 = st.columns(2)
+                    b1.metric("Beta（全期）", f"{beta:.2f}",
+                              help="Beta>1 代表波動大於大盤；Beta<1 代表相對抗跌")
+                    b2.metric("90日相關性", f"{corr90:.2f}")
+                    fig_sc = go.Figure()
+                    fig_sc.add_trace(go.Scatter(x=b_r * 100, y=s_r * 100, mode="markers",
+                        marker=dict(size=4, color="#3B82F6", opacity=0.5), name="日報酬"))
+                    x_line = np.linspace(min(b_r), max(b_r), 50)
+                    fig_sc.add_trace(go.Scatter(x=x_line * 100, y=(beta * x_line) * 100,
+                        mode="lines", name=f"β={beta:.2f}", line=dict(color="#F97316", width=2)))
+                    fig_sc.update_layout(height=280, xaxis_title="0050 日報酬%",
+                        yaxis_title=f"{stock_id} 日報酬%", hovermode="closest",
+                        margin=dict(l=40,r=20,t=20,b=20))
+                    st.plotly_chart(fig_sc, use_container_width=True)
+                else:
+                    st.caption("需要至少 30 個共同交易日才能計算 Beta")
+            else:
+                st.caption("0050 資料未入庫，無法計算 Beta")
+
+        # ── 建倉計算器 ──
+        with st.expander("💰 建倉計算器（ATR 停損 + 部位規模）"):
+            from twquant.indicators.basic import compute_atr
+            from twquant.dashboard.components.position_calc import render_position_calc
+            close_s = df["close"].astype(float)
+            atr14 = float(compute_atr(df["high"].astype(float), df["low"].astype(float), close_s, 14).iloc[-1])
+            render_position_calc(float(close_s.iloc[-1]), atr14)
+
         # TradingView 外部技術評分（可展開）
         with st.expander("🔭 外部技術評分（TradingView）"):
             render_tv_technicals(stock_id, height=320)
