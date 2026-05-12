@@ -186,7 +186,7 @@ def main():
     chg_color = "#EF4444" if chg > 0 else ("#22C55E" if chg < 0 else "#9CA3AF")
     arrow = "▲" if chg > 0 else ("▼" if chg < 0 else "─")
 
-    title_col, btn_col = st.columns([5, 1])
+    title_col, btn_col, bsk_col = st.columns([5, 1, 1])
     with title_col:
         st.markdown(
             f"### {stock_id} &nbsp; "
@@ -200,6 +200,13 @@ def main():
                      help="帶入當前股票跳到策略建構器"):
             st.session_state.update({"g_current_stock": stock_id, "current_stock": stock_id})
             st.switch_page("pages/03_strategy_builder.py")
+    with bsk_col:
+        from twquant.data.basket import add_to_basket, get_basket
+        in_basket = stock_id in get_basket()
+        if st.button("🛒 加入籃子" if not in_basket else "✓ 已在籃子",
+                     use_container_width=True, disabled=in_basket):
+            add_to_basket(stock_id)
+            st.rerun()
 
     with st.expander("📋 今日詳情"):
         e1, e2, e3, e4 = st.columns(4)

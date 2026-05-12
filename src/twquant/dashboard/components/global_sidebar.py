@@ -60,4 +60,23 @@ def render_global_sidebar(
             st.cache_data.clear()
             st.rerun()
 
+        basket = list(st.session_state.get("g_basket", []))
+        if basket:
+            st.divider()
+            with st.expander(f"🛒 交易籃（{len(basket)}）"):
+                for sid in basket:
+                    c1, c2 = st.columns([3, 1])
+                    c1.caption(sid)
+                    if c2.button("✗", key=f"bsk_rm_{sid}", use_container_width=True):
+                        from twquant.data.basket import remove_from_basket
+                        remove_from_basket(sid)
+                        st.rerun()
+                if st.button("🗑️ 清空籃子", use_container_width=True, key="bsk_clear"):
+                    from twquant.data.basket import clear_basket
+                    clear_basket()
+                    st.rerun()
+                if st.button("📊 跳頁 07 組合回測", type="primary",
+                             use_container_width=True, key="bsk_goto07"):
+                    st.switch_page("pages/07_portfolio.py")
+
     return result
