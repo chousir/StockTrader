@@ -1,29 +1,40 @@
-"""Page 4：回測結果 - 三層佈局（策略摘要 / 資金曲線 / 卡片指標+交易明細）"""
+"""Page 4：回測結果 — 5 大生產策略 + MA 雙線，三層佈局（策略摘要 / 資金曲線 / 指標+明細）"""
 
 import sys
-
 sys.path.insert(0, "src")
 
 import streamlit as st
 
 st.set_page_config(page_title="回測結果", page_icon="📊", layout="wide")
 
+_STRAT_KEYS = [
+    "momentum_concentrate", "volume_breakout", "triple_ma_twist",
+    "risk_adj_momentum", "donchian_breakout", "ma_crossover",
+]
+_STRAT_LABEL = {
+    "momentum_concentrate": "F｜動能精選 ★",
+    "volume_breakout":      "H｜量價突破",
+    "triple_ma_twist":      "L｜三線扭轉",
+    "risk_adj_momentum":    "M｜RAM動能",
+    "donchian_breakout":    "N｜唐奇安突破",
+    "ma_crossover":         "MA 黃金交叉",
+}
+
 
 @st.cache_data
 def _run_backtest(stock_id: str, start_date: str, end_date: str,
-                  short_w: int, long_w: int):
+                  strategy_key: str, short_w: int = 5, long_w: int = 20):
     import pandas as pd
     from twquant.data.storage import SQLiteStorage
     from twquant.backtest.engine import TWSEBacktestEngine
     from twquant.backtest.report import generate_report
-    from twquant.strategy.builtin.ma_crossover import MACrossover
+    from twquant.strategy.registry import get_strategy
 
     storage = SQLiteStorage("data/twquant.db")
     df = storage.load(f"daily_price/{stock_id}", start_date=start_date, end_date=end_date)
     if df.empty or len(df) < 60:
         try:
             from twquant.data.providers.csv_local import CsvLocalProvider
-            from twquant.data.providers.base import EmptyDataError
             df = CsvLocalProvider("data/sample").fetch_daily(stock_id, start_date, end_date)
         except Exception:
             from twquant.data.providers.finmind import FinMindProvider
@@ -31,20 +42,19 @@ def _run_backtest(stock_id: str, start_date: str, end_date: str,
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date").reset_index(drop=True)
 
-    df_idx = df.set_index("date")
-    strategy = MACrossover(short_window=short_w, long_window=long_w)
+    kwargs = {"short_window": short_w, "long_window": long_w} if strategy_key == "ma_crossover" else {}
+    strategy = get_strategy(strategy_key, **kwargs)
     entries, exits = strategy.generate_signals(df)
-    engine = TWSEBacktestEngine()
-    metrics = engine.run(pd.Series(df_idx["close"], dtype=float), entries, exits)
-    report = generate_report(metrics, f"MA{short_w}/{long_w}", "基準",
-                             start_date=start_date, end_date=end_date)
+    price = pd.Series(df.set_index("date")["close"], dtype=float)
+    metrics = TWSEBacktestEngine().run(price, entries, exits)
+    label = _STRAT_LABEL.get(strategy_key, strategy_key)
+    report = generate_report(metrics, label, "基準", start_date=start_date, end_date=end_date)
     return report, df
 
 
 def _render_equity_curve(report: dict, start_date: str, end_date: str, height: int = 450):
     import plotly.graph_objects as go
     import pandas as pd
-    import numpy as np
     from twquant.dashboard.styles.theme import TWStockColors
 
     equity = pd.Series(report["equity_curve"])
@@ -59,7 +69,7 @@ def _render_equity_curve(report: dict, start_date: str, end_date: str, height: i
         fillcolor="rgba(0, 212, 170, 0.1)",
     ))
 
-    # 0050 買進持有基準
+    bench_equity = None
     try:
         from twquant.data.storage import SQLiteStorage
         storage = SQLiteStorage("data/twquant.db")
@@ -77,12 +87,6 @@ def _render_equity_curve(report: dict, start_date: str, end_date: str, height: i
     except Exception:
         pass
 
-    bench_return = None
-    try:
-        bench_return = (bench_equity.iloc[-1] / bench_equity.iloc[0] - 1)
-    except Exception:
-        pass
-
     fig.update_layout(
         height=height,
         margin=dict(l=40, r=20, t=30, b=20),
@@ -93,7 +97,8 @@ def _render_equity_curve(report: dict, start_date: str, end_date: str, height: i
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    if bench_return is not None:
+    if bench_equity is not None:
+        bench_return = float(bench_equity.iloc[-1] / bench_equity.iloc[0] - 1)
         alpha = report.get("total_return", 0) - bench_return
         col1, col2, col3 = st.columns(3)
         col1.metric("策略報酬", f"{report.get('total_return', 0):.1%}")
@@ -105,7 +110,6 @@ def main():
     import pandas as pd
     from twquant.dashboard.components.global_sidebar import render_global_sidebar
 
-    # 全域 sidebar：股票 + 日期 + 快取清除
     ctx = render_global_sidebar(show_stock=True, show_dates=True, default_years=1)
     stock_id = ctx["stock_id"]
     start = ctx["start_date"]
@@ -113,8 +117,19 @@ def main():
 
     with st.sidebar:
         st.header("回測設定")
-        short_w = st.slider("短均線", 3, 30, 5)
-        long_w = st.slider("長均線", 10, 120, 20)
+        default_key = st.session_state.get("g_selected_strategy", "ma_crossover")
+        if default_key not in _STRAT_KEYS:
+            default_key = "ma_crossover"
+        strategy_key = st.selectbox(
+            "策略",
+            options=_STRAT_KEYS,
+            index=_STRAT_KEYS.index(default_key),
+            format_func=lambda k: _STRAT_LABEL.get(k, k),
+        )
+        short_w, long_w = 5, 20
+        if strategy_key == "ma_crossover":
+            short_w = st.slider("短均線", 3, 30, 5)
+            long_w = st.slider("長均線", 10, 120, 20)
         run_btn = st.button("執行回測", type="primary")
 
     if not run_btn:
@@ -123,12 +138,11 @@ def main():
 
     with st.spinner("回測執行中..."):
         report, df = _run_backtest(
-            stock_id, str(start), str(end), short_w, long_w
+            stock_id, str(start), str(end), strategy_key, short_w, long_w
         )
 
     # ── Layer 1：策略摘要 ──
-    strategy_name = f"MA{short_w}/{long_w}"
-    st.markdown(f"### 回測結果：{strategy_name} | {stock_id}")
+    st.markdown(f"### 回測結果：{_STRAT_LABEL.get(strategy_key, strategy_key)} | {stock_id}")
     st.caption(f"回測區間：{start} ~ {end} | 共 {len(df)} 個交易日")
 
     # ── Layer 2：資金曲線（視覺焦點） ──
@@ -149,9 +163,14 @@ def main():
         with st.container(border=True):
             st.subheader("交易明細")
             if report.get("trades"):
-                import pandas as pd
                 trades_df = pd.DataFrame(report["trades"])
-                st.dataframe(trades_df, use_container_width=True)
+                if "報酬率" in trades_df.columns:
+                    st.dataframe(
+                        trades_df.style.format({"報酬率": "{:.2%}"}),
+                        use_container_width=True,
+                    )
+                else:
+                    st.dataframe(trades_df, use_container_width=True)
             else:
                 st.caption("無交易記錄")
 

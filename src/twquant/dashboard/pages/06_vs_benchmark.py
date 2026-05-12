@@ -25,6 +25,8 @@ _STRAT_LABEL = {
     "donchian_breakout":    "N｜唐奇安突破",
 }
 
+_LABEL_TO_KEY = {v: k for k, v in _STRAT_LABEL.items()}
+
 _STRAT_COLOR = {
     "0050 持有(基準)":   "#94A3B8",
     "F｜動能精選 ★":    "#FFD700",
@@ -218,7 +220,11 @@ def main():
         trades = non_bench[best_name].get("trades", [])
         if trades:
             st.subheader("📋 交易明細（最近 20 筆）")
-            st.dataframe(pd.DataFrame(trades).tail(20), use_container_width=True)
+            t_df = pd.DataFrame(trades).tail(20)
+            if "報酬率" in t_df.columns:
+                st.dataframe(t_df.style.format({"報酬率": "{:.2%}"}), use_container_width=True)
+            else:
+                st.dataframe(t_df, use_container_width=True)
 
     # ── 分析師結論 ──
     st.divider()
@@ -231,7 +237,10 @@ def main():
         if bm["max_drawdown"] < -0.25:
             st.warning("注意：最大回撤 > 25%，實際操作需加強停損/部位控制")
         if st.button(f"⚡ 用最佳策略跑單股回測（{best[:8]}）", use_container_width=True):
-            st.session_state.update({"g_current_stock": stock_id, "current_stock": stock_id})
+            st.session_state.update({
+                "g_current_stock": stock_id, "current_stock": stock_id,
+                "g_selected_strategy": _LABEL_TO_KEY.get(best_name, "momentum_concentrate"),
+            })
             st.switch_page("pages/04_backtest_result.py")
     else:
         st.warning(f"本次設定無策略跑贏 0050（基準 {bench_return:.1%}）。可換標的或策略。")

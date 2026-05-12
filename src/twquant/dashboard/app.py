@@ -18,7 +18,8 @@ if should_show_onboarding():
 
 DB_PATH = "data/twquant.db"
 _POPULAR = ["2330", "2317", "2454", "2308", "0050"]
-_STRAT_LABEL = {"momentum_concentrate": "F動能精選", "volume_breakout": "H量價突破"}
+_STRAT_LABEL = {"momentum_concentrate": "F動能精選", "volume_breakout": "H量價突破",
+                "triple_ma_twist": "L三線扭轉", "risk_adj_momentum": "MRAM動能", "donchian_breakout": "N唐奇安"}
 
 with st.sidebar:
     st.title("twquant 台股量化")
@@ -187,11 +188,9 @@ def main():
             st.warning("Token 未設定，無法即時拉取新資料", icon="⚠️")
         try:
             from twquant.data.alerts import unread_count
-            n_unread = unread_count(DB_PATH)
-            if n_unread > 0:
-                st.warning(f"🔔 未讀告警 **{n_unread}** 筆 — 前往 🔔 告警中心查看")
-            else:
-                st.caption("🔔 告警：無未讀")
+            n = unread_count(DB_PATH)
+            if n > 0: st.warning(f"🔔 未讀告警 **{n}** 筆 — 前往 🔔 告警中心查看")
+            else: st.caption("🔔 告警：無未讀")
         except Exception:
             pass
 

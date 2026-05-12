@@ -134,7 +134,7 @@ class TWSEBacktestEngine:
                     "出場日": str(row.get("Exit Timestamp", ""))[:10],
                     "進場價": round(float(row.get("Avg Entry Price", 0)), 2),
                     "出場價": round(float(row.get("Avg Exit Price", 0)), 2),
-                    "報酬率": f"{float(row.get('Return', 0)):.2%}",
+                    "報酬率": float(row.get('Return', 0)),
                     "損益（元）": round(float(row.get("PnL", 0)), 0),
                 })
         except Exception:
