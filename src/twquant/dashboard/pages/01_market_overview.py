@@ -31,17 +31,27 @@ def _load_latest(sids: tuple, days_back: int = 7):
 
 @st.cache_data(ttl=1800)
 def _sector_performance(months: int = 3):
+    import sqlite3
     import pandas as pd
-    from twquant.data.universe import ANALYST_UNIVERSE
     from twquant.data.storage import SQLiteStorage
     storage = SQLiteStorage(DB_PATH)
     today = pd.Timestamp.today().normalize()
     end   = (today - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
     start = (today - pd.DateOffset(months=months)).strftime("%Y-%m-%d")
+    conn = sqlite3.connect(DB_PATH)
+    db_rows = conn.execute(
+        "SELECT u.sector, u.stock_id FROM _universe u "
+        "JOIN _symbols s ON s.name = 'daily_price/' || u.stock_id "
+        "WHERE u.sector != ''"
+    ).fetchall()
+    conn.close()
+    sector_stocks: dict[str, list[str]] = {}
+    for sector, sid in db_rows:
+        sector_stocks.setdefault(sector, []).append(sid)
     rows = []
-    for sector, stocks in ANALYST_UNIVERSE.items():
+    for sector, sids in sector_stocks.items():
         rets = []
-        for sid, _ in stocks:
+        for sid in sids[:15]:
             df = storage.load(f"daily_price/{sid}", start_date=start, end_date=end)
             if len(df) >= 10:
                 cl = df["close"].astype(float)
@@ -176,19 +186,25 @@ def main():
             st.info("0050 資料載入中...")
 
     with col_sector:
-        st.subheader("🔄 板塊輪動（近3月平均報酬）")
+        st.subheader("🔄 板塊輪動 Treemap（近3月）")
         perf = _sector_performance(3)
         if perf:
             dfp = pd.DataFrame(perf)
-            colors = ["#22C55E" if v >= 0 else "#EF4444" for v in dfp["3月報酬(%)"]]
-            fig_s = go.Figure(go.Bar(
-                x=dfp["3月報酬(%)"], y=dfp["板塊"], orientation="h",
-                marker_color=colors,
-                text=[f"{v:+.1f}%" for v in dfp["3月報酬(%)"]],
-                textposition="outside",
+            ret_col = "3月報酬(%)"
+            fig_s = go.Figure(go.Treemap(
+                labels=dfp["板塊"],
+                values=dfp["樣本數"],
+                parents=[""] * len(dfp),
+                customdata=dfp[ret_col],
+                texttemplate="%{label}<br>%{customdata:+.1f}%",
+                marker=dict(
+                    colors=dfp[ret_col],
+                    colorscale=[[0,"#22C55E"],[0.5,"#1F2937"],[1,"#EF4444"]],
+                    cmid=0,
+                ),
+                hovertemplate="<b>%{label}</b><br>報酬: %{customdata:+.1f}%<br>樣本: %{value}<extra></extra>",
             ))
-            fig_s.update_layout(height=300, margin=dict(l=10,r=60,t=10,b=20),
-                                 xaxis_title="報酬率（%）")
+            fig_s.update_layout(height=350, margin=dict(l=10,r=10,t=10,b=10))
             st.plotly_chart(fig_s, use_container_width=True)
 
     st.divider()

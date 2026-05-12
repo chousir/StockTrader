@@ -166,16 +166,10 @@ def main():
     col_sig, col_health = st.columns([3, 2])
 
     with col_sig:
-        st.caption("📡 今日訊號（自選 + 熱門，前 10 筆）")
-        try: signals = _home_signals(scan_targets)
-        except Exception: signals = []
-        if signals:
-            import pandas as pd
-            st.dataframe(pd.DataFrame(signals[:10]), use_container_width=True,
-                         hide_index=True, height=220)
-            st.caption(f"共 {len(signals)} 筆 — 完整掃描請到 📡 訊號掃描")
-        else:
-            st.info("今日無新訊號（自選 + 熱門股）— 完整掃描請至 📡 訊號掃描")
+        from twquant.dashboard.components.rankings_tab import render_home_rankings
+        try: sigs = _home_signals(scan_targets)
+        except Exception: sigs = []
+        render_home_rankings(sigs, DB_PATH)
 
     with col_health:
         st.caption("🔧 系統健康")
