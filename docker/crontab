@@ -1,0 +1,5 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# 每個交易日（週一~週五）14:30 執行同步 + 策略掃描 + 告警評估 + Discord 推播
+30 14 * * 1-5 root cd /app && set -a && . /app/.docker-env && set +a && python /app/scripts/scheduled_sync.py >> /var/log/twquant-cron.log 2>&1

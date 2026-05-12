@@ -30,7 +30,7 @@ RUN cd rust/twquant-core && maturin build --release --out /build/wheels
 FROM python:3.11-slim-bookworm AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgomp1 curl && \
+    libgomp1 curl cron && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -46,20 +46,28 @@ RUN pip install --no-cache-dir \
 COPY --from=rust-builder /build/wheels/*.whl /tmp/wheels/
 RUN pip install --no-cache-dir /tmp/wheels/*.whl && rm -rf /tmp/wheels
 
-# 複製應用原始碼
+# 複製應用原始碼與排程資源
 COPY src/       src/
+COPY scripts/   scripts/
 COPY data/sample/ data/sample/
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY docker/crontab       /etc/cron.d/twquant
 
-RUN mkdir -p data/raw data/processed data/arcticdb
+RUN mkdir -p data/raw data/processed data/arcticdb && \
+    chmod +x /usr/local/bin/entrypoint.sh && \
+    chmod 644 /etc/cron.d/twquant && \
+    touch /var/log/twquant-cron.log
 
 ENV PYTHONPATH=/app/src
 ENV STREAMLIT_SERVER_PORT=8501
 ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
 ENV STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+ENV AUTO_SEED=true
+ENV ENABLE_CRON=true
 
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
     CMD curl -f http://localhost:8501/_stcore/health || exit 1
 
 EXPOSE 8501
 
-CMD ["python", "-m", "streamlit", "run", "src/twquant/dashboard/app.py"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

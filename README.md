@@ -120,11 +120,22 @@ make docker-up
 # 即時 log
 make docker-logs
 
-# 關閉
+# 關閉（資料不會消失）
 make docker-down
 ```
 
-`Dockerfile` 為兩階段建置：第一階段用 `rust:1.80-bookworm` 編譯 wheel，第二階段用 `python:3.12-slim-bookworm` 跑 Streamlit。
+`Dockerfile` 為兩階段建置：第一階段用 `rust:1.80-bookworm` 編譯 wheel，第二階段用 `python:3.11-slim-bookworm` 跑 Streamlit。容器內建 cron daemon + entrypoint 自動 seed 流程，**零配置即可長期執行**。
+
+### 🚦 啟動行為一覽
+
+| 場景 | 行為 |
+|------|------|
+| **首次啟動（空 volume）+ 有 `FINMIND_API_TOKEN`** | 自動執行 `seed_data.py --universe` 抓 49 支精選宇宙（約 5-10 分鐘），完成後啟動 Streamlit + cron |
+| **首次啟動（空 volume）+ 無 token** | 跳過 seed，直接啟動 Streamlit；使用者進 onboarding 填 token 後可手動 `docker exec ... seed_data.py` |
+| **重啟容器**（`docker compose restart` / `up -d` 再次） | Volume 保留 → **不重抓** → 直接啟動 |
+| **更新 image 重建**（`up --build`） | Volume 保留 → 不重抓 |
+| **隔一段時間自動回來開** | 容器內 cron 每交易日 14:30 自動執行 `scheduled_sync.py`（增量同步 + 策略掃描 + Discord 推播） |
+| **手動補齊資料** | `docker exec twquant-app python scripts/scheduled_sync.py` |
 
 ### 📦 資料持久化（Volume）
 
@@ -132,28 +143,33 @@ make docker-down
 
 ```yaml
 volumes:
-  - twquant-data:/app/data   # SQLite DB + ArcticDB 都存在這裡
+  - twquant-data:/app/data   # SQLite DB + ArcticDB + user_config.json
 ```
 
 - 容器更新 / 重啟後，資料庫**不會消失**。
 - 查看 volume 實體路徑：`docker volume inspect twquant-data`
 - 備份：`docker run --rm -v twquant-data:/data -v $(pwd):/backup alpine tar czf /backup/twquant-data.tar.gz /data`
+- 重置（清空所有資料重來）：`docker compose down && docker volume rm twquant-data && docker compose up -d`
 
 ### 🔑 環境變數設定
 
-所有環境變數均為**選填**，未設定時平台仍可正常運行（僅對應功能停用）。
+**所有環境變數均為選填**，未設定時平台仍可運行（僅對應功能停用）。
 
 **方式一：`.env` 檔案（推薦）**
 
 在專案根目錄建立 `.env`，`docker compose up` 會自動讀取：
 
 ```env
-# FinMind API Token（無 Token 仍可用本地 DB；需即時拉取資料才必填）
+# FinMind API Token（不填 → 無法拉取新資料，但本地 DB 既有資料仍可讀；
+#                   設定後 entrypoint 會自動同步到 user_config.json 供 dashboard 使用）
 FINMIND_API_TOKEN=your_token_here
 
-# Discord Webhook URL（選填；未設定則每日選股只落地 DB，不推播）
-# 建立方式：Discord 伺服器 → 頻道設定 → 整合 → Webhook → 複製 URL
+# Discord Webhook URL（不填 → 每日選股仍會落地 DB，但不推播）
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/xxx/yyy
+
+# 行為旗標（保留預設即可）
+AUTO_SEED=true       # 首次啟動偵測空 DB 時自動 seed_data.py --universe
+ENABLE_CRON=true     # 啟動 cron daemon（每交易日 14:30 自動同步+掃描+推播）
 ```
 
 **方式二：直接 export 再啟動**
@@ -164,19 +180,51 @@ export DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/xxx/yyy
 docker compose up -d
 ```
 
-### ⏰ 每日自動掃描（排程）
+| 變數 | 預設值 | 說明 |
+|------|--------|------|
+| `FINMIND_API_TOKEN` | 空 | FinMind API Token；空值跳過自動 seed |
+| `DISCORD_WEBHOOK_URL` | 空 | Discord Webhook；空值不推播 |
+| `AUTO_SEED` | `true` | 首次啟動自動 seed。CI / 測試可設為 `false` |
+| `ENABLE_CRON` | `true` | 容器內建 cron 排程。不想用設為 `false`，改自己用宿主機 cron |
+| `ARCTICDB_URI` | `lmdb:///app/data/arcticdb` | ArcticDB 連線字串 |
+| `TZ` | `Asia/Taipei` | 時區（影響 cron 觸發時間） |
 
-每個交易日盤後 14:30，執行同步 → 策略掃描 → 告警評估 → Discord 推播：
+### ⏰ 每日自動同步（容器內建 cron）
 
-```bash
-# 在容器內（crontab -e 設定）
-30 14 * * 1-5  docker exec twquant-app python scripts/scheduled_sync.py
+`Dockerfile` 安裝了 `cron` 套件，`entrypoint.sh` 啟動時會啟動 cron daemon。預設排程：
 
-# 或宿主機直接執行（需 Python 環境）
-30 14 * * 1-5  cd /your/project && poetry run python scripts/scheduled_sync.py
+```cron
+30 14 * * 1-5  python scripts/scheduled_sync.py >> /var/log/twquant-cron.log 2>&1
 ```
 
-僅同步資料、跳過掃描：`python scripts/scheduled_sync.py --no-scan`
+每個交易日（週一至週五）14:30（盤後 1 小時）執行：
+1. **增量同步**：從 HWM 接續抓取新資料
+2. **每日策略掃描**：對訂閱的策略跑全宇宙掃描，結果寫入 `daily_scans` 表
+3. **告警評估**：所有啟用規則跑一次
+4. **Discord 推播**：選股清單 + 告警觸發訊息
+
+**查看 cron 執行紀錄**：
+
+```bash
+docker exec twquant-app tail -f /var/log/twquant-cron.log
+```
+
+**自訂排程時間**：編輯 [`docker/crontab`](docker/crontab) 後 `docker compose up --build`。
+
+**手動立即執行**：
+
+```bash
+docker exec twquant-app python scripts/scheduled_sync.py             # 同步 + 掃描 + 推播
+docker exec twquant-app python scripts/scheduled_sync.py --no-scan   # 僅同步資料
+```
+
+### 🌱 手動 seed（首次未自動跑或要重建時）
+
+```bash
+docker exec twquant-app python scripts/seed_data.py --universe       # 49 支精選宇宙（推薦）
+docker exec twquant-app python scripts/seed_data.py --all            # 全市場 ~3000 支（3-4 小時）
+docker exec twquant-app python scripts/seed_data.py --stocks 2330 0050  # 指定股票
+```
 
 ---
 
