@@ -107,8 +107,12 @@ def _check_strategies(df, strat_keys: list[str], lookback_days: int = 5) -> list
 @st.cache_data(ttl=900, show_spinner=False)
 def _run_funnel(sids: tuple[str, ...], rsi_min: int, rsi_max: int,
                 min_vol: float, min_ret20: float, max_dd: float,
-                strat_keys: tuple[str, ...], lookback: int) -> tuple[list[dict], int]:
-    """兩階段漏斗：粗篩 + 精篩，回傳 (通過清單, 粗篩通過數)"""
+                strat_keys: tuple[str, ...], lookback: int,
+                skip_stage1: bool = False) -> tuple[list[dict], int]:
+    """兩階段漏斗：粗篩 + 精篩，回傳 (通過清單, 粗篩通過數)
+
+    skip_stage1=True → 純訊號雷達模式（略過粗篩，直接對來源股池跑 5 策略訊號）
+    """
     import pandas as pd
     from twquant.data.storage import SQLiteStorage
     from twquant.data.universe import get_name, get_sector
@@ -134,14 +138,16 @@ def _run_funnel(sids: tuple[str, ...], rsi_min: int, rsi_max: int,
         f = _compute_features(df)
         if not f or any(math.isnan(f.get(k, float("nan"))) for k in ("ma60", "rsi14")):
             continue
-        if not (
-            f["close"] > f["ma60"]
-            and f["vol_ratio"] >= min_vol
-            and rsi_min <= f["rsi14"] <= rsi_max
-            and f["ret20"] >= min_ret20 / 100
-            and f["dd_from_high"] >= -max_dd / 100
-        ):
-            continue
+        # 粗篩條件（雷達模式跳過）
+        if not skip_stage1:
+            if not (
+                f["close"] > f["ma60"]
+                and f["vol_ratio"] >= min_vol
+                and rsi_min <= f["rsi14"] <= rsi_max
+                and f["ret20"] >= min_ret20 / 100
+                and f["dd_from_high"] >= -max_dd / 100
+            ):
+                continue
         # RS vs 0050（自資料開始日起的累積比）
         if not df_bench.empty:
             stock_ret_total = float(df["close"].iloc[-1] / df["close"].iloc[0])
@@ -185,10 +191,16 @@ def main():
     register_twquant_dark_template()
     render_global_sidebar(show_stock=False, show_dates=False)
 
-    st.title("🔻 兩階段選股漏斗")
-    st.caption("全市場 / 產業 → 粗篩（4 條件）→ 5 策略精篩 → 候選清單｜快取 15 分鐘")
-
     with st.sidebar:
+        st.header("🎯 掃描模式")
+        scan_mode = st.radio(
+            "模式",
+            ["🔻 兩階段漏斗（粗篩+精篩）", "📡 純訊號雷達（跳過粗篩）"],
+            label_visibility="collapsed",
+        )
+        radar_mode = scan_mode.startswith("📡")
+
+        st.divider()
         st.header("🔍 選股來源")
         source = st.radio("來源", ["全市場", "指定產業"], horizontal=True)
         sectors = ()
@@ -196,19 +208,24 @@ def main():
             sectors = tuple(st.multiselect("產業（可多選）", list_sectors(),
                                             default=["半導體業", "電子工業"]))
 
-        st.divider()
-        st.header("📊 階段 1：粗篩條件")
-        tmpl = st.selectbox("一鍵模板", list(_TEMPLATES.keys()))
-        t = _TEMPLATES[tmpl]
-        with st.expander("微調條件", expanded=False):
-            rsi_range = st.slider("RSI(14) 區間", 0, 100, (t["rsi_min"], t["rsi_max"]))
-            min_vol = st.slider("最低量比（vol5/vol20）", 0.5, 3.0, t["min_vol"], 0.1)
-            min_ret20 = st.slider("最低 20 日漲幅 %", -10.0, 30.0, t["min_ret20"], 1.0)
-            max_dd = st.slider("距 60 日高點最大跌幅 %", 0.0, 50.0, t["max_dd"], 1.0)
-        st.caption("固定條件：Close > MA60（趨勢向上）")
+        # 粗篩條件區（雷達模式下隱藏）
+        if not radar_mode:
+            st.divider()
+            st.header("📊 階段 1：粗篩條件")
+            tmpl = st.selectbox("一鍵模板", list(_TEMPLATES.keys()))
+            t = _TEMPLATES[tmpl]
+            with st.expander("微調條件", expanded=False):
+                rsi_range = st.slider("RSI(14) 區間", 0, 100, (t["rsi_min"], t["rsi_max"]))
+                min_vol = st.slider("最低量比（vol5/vol20）", 0.5, 3.0, t["min_vol"], 0.1)
+                min_ret20 = st.slider("最低 20 日漲幅 %", -10.0, 30.0, t["min_ret20"], 1.0)
+                max_dd = st.slider("距 60 日高點最大跌幅 %", 0.0, 50.0, t["max_dd"], 1.0)
+            st.caption("固定條件：Close > MA60（趨勢向上）")
+        else:
+            rsi_range = (0, 100)
+            min_vol, min_ret20, max_dd = 0.0, -100.0, 100.0
 
         st.divider()
-        st.header("🎯 階段 2：精篩策略")
+        st.header("🎯 階段 2：精篩策略" if not radar_mode else "🎯 策略訊號")
         strat_keys = st.multiselect(
             "策略（可多選）", _STRAT_KEYS, default=_STRAT_KEYS,
             format_func=lambda k: _STRAT_LABEL.get(k, k),
@@ -216,7 +233,18 @@ def main():
         lookback = st.slider("回看近 N 日內訊號觸發", 1, 10, 5)
         min_score = st.slider("最低共振分數（命中策略數）", 0, 5, 1)
 
-        run_btn = st.button("🚀 執行漏斗", type="primary", use_container_width=True)
+        run_btn = st.button(
+            "🚀 執行漏斗" if not radar_mode else "📡 啟動雷達",
+            type="primary", use_container_width=True,
+        )
+
+    # 主區標題
+    if radar_mode:
+        st.title("📡 純訊號雷達")
+        st.caption("跳過粗篩，直接掃描指定股池近 N 日的 5 策略訊號｜快取 15 分鐘")
+    else:
+        st.title("🔻 兩階段選股漏斗")
+        st.caption("全市場 / 產業 → 粗篩（4 條件）→ 5 策略精篩 → 候選清單｜快取 15 分鐘")
 
     if not run_btn:
         st.info("在左側設定條件後，點擊「🚀 執行漏斗」開始兩階段選股。")
@@ -249,6 +277,7 @@ def main():
             tuple(sids), rsi_range[0], rsi_range[1],
             float(min_vol), float(min_ret20), float(max_dd),
             tuple(strat_keys), int(lookback),
+            skip_stage1=radar_mode,
         )
 
     # ── 漏斗統計 ──
@@ -257,10 +286,13 @@ def main():
     n_resonance = sum(1 for r in results if r["分"] >= 2)
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("📥 來源", f"{n_source} 支")
-    c2.metric("📊 階段 1 通過", f"{n_stage1} 支",
-              delta=f"{n_stage1-n_source}" if n_source else None,
-              delta_color="off")
-    c3.metric("🎯 階段 2 通過", f"{n_stage2} 支",
+    if radar_mode:
+        c2.metric("📡 雷達掃描", f"{n_stage1} 支", "略過粗篩", delta_color="off")
+    else:
+        c2.metric("📊 階段 1 通過", f"{n_stage1} 支",
+                  delta=f"{n_stage1-n_source}" if n_source else None,
+                  delta_color="off")
+    c3.metric("🎯 訊號觸發" if radar_mode else "🎯 階段 2 通過", f"{n_stage2} 支",
               delta=f"{n_stage2-n_stage1}" if n_stage1 else None,
               delta_color="off")
     c4.metric("⚡ 共振 ≥ 2", f"{n_resonance} 支")
@@ -326,6 +358,44 @@ def main():
     # ── CSV 下載 ──
     csv = df_show[display_cols].to_csv(index=False).encode("utf-8-sig")
     st.download_button("⬇️ 下載候選 CSV", csv, "funnel_picks.csv", "text/csv")
+
+    # ── 雷達模式專屬：訊號分布視覺化 ──
+    if radar_mode and len(df_show) > 0:
+        import plotly.graph_objects as go
+        st.divider()
+        with st.expander("📊 訊號分布視覺化", expanded=False):
+            col_bar, col_sc = st.columns([1, 2])
+            with col_bar:
+                strat_counts: dict[str, int] = {}
+                for r in results:
+                    for k in r["_fired_keys"]:
+                        strat_counts[_STRAT_LABEL[k]] = strat_counts.get(_STRAT_LABEL[k], 0) + 1
+                if strat_counts:
+                    fig_bar = go.Figure(go.Bar(
+                        x=list(strat_counts.values()), y=list(strat_counts.keys()),
+                        orientation="h", text=list(strat_counts.values()),
+                        textposition="outside",
+                    ))
+                    fig_bar.update_layout(height=260, margin=dict(l=20, r=20, t=20, b=20),
+                                          xaxis_title="觸發股數", yaxis_title="")
+                    st.plotly_chart(fig_bar, use_container_width=True)
+            with col_sc:
+                fig_sc = go.Figure(go.Scatter(
+                    x=df_show["距60d高%"], y=df_show["RSI"], mode="markers+text",
+                    text=df_show["代號"], textposition="top center", textfont=dict(size=9),
+                    marker=dict(size=df_show["分"] * 4 + 6,
+                                color=df_show["20d漲%"], colorscale="RdYlGn",
+                                cmid=0, line=dict(width=1, color="white")),
+                ))
+                fig_sc.add_hline(y=50, line_color="#4B5563", line_dash="dot", line_width=1)
+                fig_sc.add_vline(x=-10, line_color="#4B5563", line_dash="dot", line_width=1)
+                fig_sc.update_layout(
+                    height=300, hovermode="closest",
+                    xaxis_title="距 60 日高 %（負=遠離高點）",
+                    yaxis_title="RSI(14)",
+                    margin=dict(l=50, r=20, t=20, b=40),
+                )
+                st.plotly_chart(fig_sc, use_container_width=True)
 
 
 if __name__ == "__main__":
