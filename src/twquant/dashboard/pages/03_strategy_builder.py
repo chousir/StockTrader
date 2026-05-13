@@ -1,279 +1,331 @@
-"""Page 3：策略建構器 - 所有策略 + 指標副圖 + 回測結果"""
+"""Page 3：兩階段選股漏斗 — 全市場 → 粗篩 → 5 策略精篩 → 候選清單"""
 
 import sys
-
 sys.path.insert(0, "src")
 
+import math
 import streamlit as st
 
-st.set_page_config(page_title="策略建構器", page_icon="🔧", layout="wide")
+st.set_page_config(page_title="兩階段選股漏斗", page_icon="🔻", layout="wide")
 
+DB_PATH = "data/twquant.db"
 
-@st.cache_data
-def _get_data(stock_id: str, start_date: str, end_date: str):
-    import pandas as pd
-    from twquant.data.storage import SQLiteStorage
-
-    storage = SQLiteStorage("data/twquant.db")
-    df = storage.load(f"daily_price/{stock_id}", start_date=start_date, end_date=end_date)
-    if len(df) >= 60:
-        df["date"] = pd.to_datetime(df["date"])
-        return df.sort_values("date").reset_index(drop=True)
-
-    # DB 資料不足 → CSV 備援 → API 備援
-    from twquant.data.providers.csv_local import CsvLocalProvider
-    from twquant.data.providers.base import EmptyDataError
-    try:
-        return CsvLocalProvider("data/sample").fetch_daily(stock_id, start_date, end_date)
-    except EmptyDataError:
-        from twquant.data.providers.finmind import FinMindProvider
-        return FinMindProvider().fetch_daily(stock_id, start_date, end_date)
-
-
-_PRODUCTION_STRATEGIES = {
+_STRAT_KEYS = [
     "momentum_concentrate", "volume_breakout", "triple_ma_twist",
     "risk_adj_momentum", "donchian_breakout",
+]
+_STRAT_LABEL = {
+    "momentum_concentrate": "F｜動能精選 ★",
+    "volume_breakout":      "H｜量價突破",
+    "triple_ma_twist":      "L｜三線扭轉",
+    "risk_adj_momentum":    "M｜RAM動能",
+    "donchian_breakout":    "N｜唐奇安突破",
+}
+_STRAT_SHORT = {
+    "momentum_concentrate": "F", "volume_breakout": "H",
+    "triple_ma_twist": "L", "risk_adj_momentum": "M",
+    "donchian_breakout": "N",
+}
+
+# 一鍵模板：粗篩條件預設組合
+_TEMPLATES = {
+    "多頭趨勢（推薦）": dict(rsi_min=30, rsi_max=75, min_vol=1.0, min_ret20=0.0, max_dd=30.0),
+    "保守":           dict(rsi_min=40, rsi_max=70, min_vol=1.2, min_ret20=0.0, max_dd=15.0),
+    "激進動能":       dict(rsi_min=50, rsi_max=80, min_vol=1.5, min_ret20=10.0, max_dd=40.0),
 }
 
 
-def _build_signal_chart(df, entries, exits, strategy_key, strategy_obj):
-    """K線+訊號標記 + 策略專屬指標副圖"""
+@st.cache_data(ttl=900, show_spinner=False)
+def _get_universe(source: str, sectors: tuple[str, ...]) -> list[str]:
+    """依來源回傳股票代號清單"""
+    from twquant.data.storage import SQLiteStorage
+    from twquant.data.universe import list_by_sector_db
+
+    if source == "全市場":
+        syms = SQLiteStorage(DB_PATH).list_symbols()
+        return sorted({s.replace("daily_price/", "") for s in syms if s.startswith("daily_price/")})
+    elif source == "指定產業" and sectors:
+        result: set[str] = set()
+        for sec in sectors:
+            for sid, _ in list_by_sector_db(sec):
+                result.add(sid)
+        return sorted(result)
+    return []
+
+
+def _compute_features(df) -> dict:
+    """單股技術特徵（重用 indicators/basic.py）"""
     import numpy as np
-    import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
-    from twquant.dashboard.styles.theme import TWStockColors
-    from twquant.dashboard.styles.plotly_theme import register_twquant_dark_template
-    from twquant.indicators.basic import compute_macd, compute_rsi, compute_bollinger, compute_ma
+    import pandas as pd
+    from twquant.indicators.basic import compute_ma, compute_rsi
+    close = df["close"].astype(float)
+    high = df["high"].astype(float)
+    low = df["low"].astype(float)
+    volume = df["volume"].astype(float)
+    n = len(df)
+    if n < 60:
+        return {}
+    ma20 = compute_ma(close, 20).iloc[-1]
+    ma60 = compute_ma(close, 60).iloc[-1]
+    rsi14 = compute_rsi(close, 14).iloc[-1]
+    vol5 = volume.iloc[-5:].mean()
+    vol20 = volume.iloc[-20:].mean()
+    vol_ratio = float(vol5 / vol20) if vol20 > 0 else 1.0
+    ret20 = float(close.iloc[-1] / close.iloc[-21] - 1) if n >= 21 else 0.0
+    high60 = close.iloc[-60:].max()
+    dd_from_high = float(close.iloc[-1] / high60 - 1) if high60 > 0 else 0.0
+    return {
+        "close": float(close.iloc[-1]),
+        "ma20": float(ma20) if pd.notna(ma20) else float("nan"),
+        "ma60": float(ma60) if pd.notna(ma60) else float("nan"),
+        "rsi14": float(rsi14) if pd.notna(rsi14) else float("nan"),
+        "vol_ratio": vol_ratio,
+        "ret20": ret20,
+        "dd_from_high": dd_from_high,
+    }
 
-    register_twquant_dark_template()
 
-    close = df["close"]
-    dates = df["date"].astype(str)
-
-    # 副圖配置依策略調整
-    if strategy_key == "macd_divergence":
-        rows, row_heights = 3, [0.55, 0.20, 0.25]
-        subplot_titles = ("K 線圖", "成交量（張）", "MACD")
-    elif strategy_key in ("rsi_reversal", ) | _PRODUCTION_STRATEGIES:
-        rows, row_heights = 3, [0.55, 0.20, 0.25]
-        subplot_titles = ("K 線圖", "成交量（張）", "RSI(14)")
-    elif strategy_key == "bollinger_breakout":
-        rows, row_heights = 2, [0.70, 0.30]
-        subplot_titles = ("K 線圖（布林帶）", "成交量（張）")
-    else:
-        rows, row_heights = 2, [0.70, 0.30]
-        subplot_titles = ("K 線圖", "成交量（張）")
-
-    fig = make_subplots(
-        rows=rows, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.03,
-        row_heights=row_heights,
-        subplot_titles=subplot_titles,
-    )
-
-    # ── K 線 ──
-    fig.add_trace(go.Candlestick(
-        x=dates, open=df["open"], high=df["high"],
-        low=df["low"], close=close, name="K線",
-        increasing_line_color=TWStockColors.CANDLE_UP_BORDER,
-        increasing_fillcolor=TWStockColors.CANDLE_UP_FILL,
-        decreasing_line_color=TWStockColors.CANDLE_DOWN_BORDER,
-        decreasing_fillcolor=TWStockColors.CANDLE_DOWN_FILL,
-    ), row=1, col=1)
-
-    # MA 5/20（全策略）；MA60 加入生產策略
-    for p, c in [(5, TWStockColors.MA_5), (20, TWStockColors.MA_20)]:
-        if len(df) >= p:
-            fig.add_trace(go.Scatter(
-                x=dates, y=compute_ma(close, p), mode="lines",
-                name=f"MA{p}", line=dict(color=c, width=1),
-            ), row=1, col=1)
-    if strategy_key in _PRODUCTION_STRATEGIES and len(df) >= 60:
-        fig.add_trace(go.Scatter(
-            x=dates, y=compute_ma(close, 60), mode="lines",
-            name="MA60", line=dict(color=TWStockColors.MA_60, width=1.5),
-        ), row=1, col=1)
-
-    # 布林帶 overlay
-    if strategy_key == "bollinger_breakout":
-        upper, mid, lower = compute_bollinger(close)
-        fig.add_trace(go.Scatter(
-            x=dates, y=upper, mode="lines", name="BB上軌",
-            line=dict(color="rgba(59,130,246,0.6)", width=1, dash="dot"),
-        ), row=1, col=1)
-        fig.add_trace(go.Scatter(
-            x=dates, y=lower, mode="lines", name="BB下軌",
-            line=dict(color="rgba(59,130,246,0.6)", width=1, dash="dot"),
-            fill="tonexty", fillcolor="rgba(59,130,246,0.05)",
-        ), row=1, col=1)
-
-    # Kalman 平滑曲線
-    if strategy_key == "rust_kalman":
+def _check_strategies(df, strat_keys: list[str], lookback_days: int = 5) -> list[str]:
+    """回傳近 N 日內觸發進場的策略 key"""
+    from twquant.strategy.registry import get_strategy
+    if len(df) < 120:
+        return []
+    fired = []
+    for key in strat_keys:
         try:
-            smoothed = strategy_obj.get_smoothed_prices(df)
-            fig.add_trace(go.Scatter(
-                x=dates, y=smoothed, mode="lines", name="Kalman 平滑",
-                line=dict(color="#FF9500", width=2, dash="dash"),
-            ), row=1, col=1)
+            entries, _ = get_strategy(key).generate_signals(df)
+            tail = entries[-lookback_days:] if hasattr(entries, "__len__") and len(entries) >= lookback_days else entries
+            if hasattr(tail, "any") and bool(tail.any()):
+                fired.append(key)
+            elif any(bool(x) for x in tail):
+                fired.append(key)
         except Exception:
             pass
+    return fired
 
-    # 進出場標記
-    entry_mask = entries.astype(bool)
-    exit_mask = exits.astype(bool)
-    if entry_mask.any():
-        fig.add_trace(go.Scatter(
-            x=dates[entry_mask], y=df["close"].values[entry_mask] * 0.975,
-            mode="markers", name="進場",
-            marker=dict(symbol="triangle-up", size=12, color="#34C759"),
-        ), row=1, col=1)
-    if exit_mask.any():
-        fig.add_trace(go.Scatter(
-            x=dates[exit_mask], y=df["close"].values[exit_mask] * 1.025,
-            mode="markers", name="出場",
-            marker=dict(symbol="triangle-down", size=12, color="#FF3B30"),
-        ), row=1, col=1)
 
-    # ── 成交量（張） ──
-    vol_row = 2
-    is_up = df["close"] >= df["open"]
-    bar_colors = [TWStockColors.VOLUME_UP if u else TWStockColors.VOLUME_DOWN for u in is_up]
-    fig.add_trace(go.Bar(
-        x=dates, y=df["volume"] / 1000,
-        name="成交量(張)", marker_color=bar_colors, showlegend=False,
-    ), row=vol_row, col=1)
+@st.cache_data(ttl=900, show_spinner=False)
+def _run_funnel(sids: tuple[str, ...], rsi_min: int, rsi_max: int,
+                min_vol: float, min_ret20: float, max_dd: float,
+                strat_keys: tuple[str, ...], lookback: int) -> tuple[list[dict], int]:
+    """兩階段漏斗：粗篩 + 精篩，回傳 (通過清單, 粗篩通過數)"""
+    import pandas as pd
+    from twquant.data.storage import SQLiteStorage
+    from twquant.data.universe import get_name, get_sector
 
-    # ── 策略指標副圖 ──
-    if rows == 3:
-        if strategy_key == "macd_divergence":
-            p = strategy_obj.get_parameters()
-            macd, signal, hist = compute_macd(close, p.get("fast", 12), p.get("slow", 26), p.get("signal", 9))
-            colors = ["#EF4444" if h >= 0 else "#22C55E" for h in hist.fillna(0)]
-            fig.add_trace(go.Bar(x=dates, y=hist, name="MACD柱", marker_color=colors, showlegend=False), row=3, col=1)
-            fig.add_trace(go.Scatter(x=dates, y=macd, mode="lines", name="MACD", line=dict(color="#3B82F6", width=1)), row=3, col=1)
-            fig.add_trace(go.Scatter(x=dates, y=signal, mode="lines", name="Signal", line=dict(color="#F97316", width=1)), row=3, col=1)
-        elif strategy_key in ("rsi_reversal",) | _PRODUCTION_STRATEGIES:
-            p = strategy_obj.get_parameters()
-            rsi_period = p.get("period", 14)
-            rsi = compute_rsi(close, rsi_period)
-            fig.add_trace(go.Scatter(x=dates, y=rsi, mode="lines", name="RSI", line=dict(color="#A855F7", width=1.5)), row=3, col=1)
-            # 依策略顯示對應的 RSI 閾值線
-            rsi_ob = p.get("rsi_entry", p.get("rsi_cap", p.get("overbought", 70)))
-            rsi_os = p.get("oversold", 30)
-            for level, dash in [(rsi_ob, "dash"), (rsi_os, "dash"), (50, "dot")]:
-                color = "#EF4444" if level == rsi_ob else ("#22C55E" if level == rsi_os else "#6B7280")
-                fig.add_hline(y=level, line_dash=dash, line_color=color, line_width=1, row=3, col=1)
+    # 0050 基準
+    storage = SQLiteStorage(DB_PATH)
+    df_bench = storage.load("daily_price/0050")
+    if not df_bench.empty:
+        bench_close = df_bench["close"].astype(float)
+        bench_first = bench_close.iloc[0]
+        bench_last = bench_close.iloc[-1]
+        bench_ret_total = bench_last / bench_first
+    else:
+        bench_ret_total = 1.0
 
-    fig.update_layout(
-        height=620 if rows == 3 else 520,
-        xaxis_rangeslider_visible=False,
-        margin=dict(l=40, r=20, t=40, b=20),
-        hovermode="x unified",
-        legend=dict(orientation="h", y=1.02),
-    )
-    return fig
+    stage1_pass: list[dict] = []
+    for sid in sids:
+        df = storage.load(f"daily_price/{sid}")
+        if df.empty or len(df) < 60:
+            continue
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.sort_values("date").reset_index(drop=True)
+        f = _compute_features(df)
+        if not f or any(math.isnan(f.get(k, float("nan"))) for k in ("ma60", "rsi14")):
+            continue
+        if not (
+            f["close"] > f["ma60"]
+            and f["vol_ratio"] >= min_vol
+            and rsi_min <= f["rsi14"] <= rsi_max
+            and f["ret20"] >= min_ret20 / 100
+            and f["dd_from_high"] >= -max_dd / 100
+        ):
+            continue
+        # RS vs 0050（自資料開始日起的累積比）
+        if not df_bench.empty:
+            stock_ret_total = float(df["close"].iloc[-1] / df["close"].iloc[0])
+            rs = stock_ret_total / bench_ret_total
+        else:
+            rs = 1.0
+        stage1_pass.append({"sid": sid, "df": df, "rs": rs, **f})
+
+    n_stage1 = len(stage1_pass)
+    if n_stage1 == 0:
+        return [], 0
+
+    # 階段 2：策略觸發
+    stage2: list[dict] = []
+    for s in stage1_pass:
+        fired = _check_strategies(s["df"], list(strat_keys), lookback)
+        if fired:
+            stage2.append({
+                "代號": s["sid"],
+                "名稱": get_name(s["sid"]),
+                "產業": get_sector(s["sid"]),
+                "收盤": round(s["close"], 2),
+                "RSI": round(s["rsi14"], 1),
+                "量比": round(s["vol_ratio"], 2),
+                "20d漲%": round(s["ret20"] * 100, 1),
+                "距60d高%": round(s["dd_from_high"] * 100, 1),
+                "RS": round(s["rs"], 2),
+                "共振策略": "+".join(_STRAT_SHORT[k] for k in fired),
+                "_fired_keys": fired,
+                "分": len(fired),
+            })
+    return stage2, n_stage1
 
 
 def main():
     import pandas as pd
-    from twquant.strategy.registry import list_strategies, get_strategy
-    from twquant.backtest.engine import TWSEBacktestEngine
-    from twquant.backtest.report import generate_report
-    from twquant.dashboard.components.metrics_card import render_metrics_cards
-    from twquant.dashboard.config import get_init_cash, get_broker_discount
+    from twquant.dashboard.styles.plotly_theme import register_twquant_dark_template
     from twquant.dashboard.components.global_sidebar import render_global_sidebar
+    from twquant.data.universe import list_sectors
 
-    # 全域 sidebar：股票 + 日期 + 快取清除
-    ctx = render_global_sidebar(show_stock=True, show_dates=True, default_years=1)
-    stock_id = ctx["stock_id"]
-    start = ctx["start_date"]
-    end = ctx["end_date"]
+    register_twquant_dark_template()
+    render_global_sidebar(show_stock=False, show_dates=False)
 
-    strategy_info = list_strategies()
-    strategy_map = {s["name"]: s["key"] for s in strategy_info}
+    st.title("🔻 兩階段選股漏斗")
+    st.caption("全市場 / 產業 → 粗篩（4 條件）→ 5 策略精篩 → 候選清單｜快取 15 分鐘")
 
     with st.sidebar:
-        st.header("策略設定")
-        strategy_label = st.selectbox("策略選擇", [s["name"] for s in strategy_info])
-        strategy_key = strategy_map[strategy_label]
-        selected_info = next(s for s in strategy_info if s["key"] == strategy_key)
+        st.header("🔍 選股來源")
+        source = st.radio("來源", ["全市場", "指定產業"], horizontal=True)
+        sectors = ()
+        if source == "指定產業":
+            sectors = tuple(st.multiselect("產業（可多選）", list_sectors(),
+                                            default=["半導體業", "電子工業"]))
 
         st.divider()
-        st.caption("策略參數")
-        params = {}
-        for k, v in selected_info["parameters"].items():
-            if isinstance(v, float):
-                params[k] = st.slider(k, float(v * 0.1), float(v * 10), float(v), format="%.3f")
-            elif isinstance(v, int):
-                params[k] = st.slider(k, max(1, v // 3), v * 4, v)
+        st.header("📊 階段 1：粗篩條件")
+        tmpl = st.selectbox("一鍵模板", list(_TEMPLATES.keys()))
+        t = _TEMPLATES[tmpl]
+        with st.expander("微調條件", expanded=False):
+            rsi_range = st.slider("RSI(14) 區間", 0, 100, (t["rsi_min"], t["rsi_max"]))
+            min_vol = st.slider("最低量比（vol5/vol20）", 0.5, 3.0, t["min_vol"], 0.1)
+            min_ret20 = st.slider("最低 20 日漲幅 %", -10.0, 30.0, t["min_ret20"], 1.0)
+            max_dd = st.slider("距 60 日高點最大跌幅 %", 0.0, 50.0, t["max_dd"], 1.0)
+        st.caption("固定條件：Close > MA60（趨勢向上）")
 
-        init_cash = st.number_input("初始資金（元）", value=get_init_cash(), step=100_000)
-        broker_discount = st.select_slider("手續費折扣", options=[i / 10 for i in range(1, 11)], value=get_broker_discount(), format_func=lambda x: f"{x:.0%}")
-        run_btn = st.button("執行回測", type="primary", use_container_width=True)
-
-    st.title("🔧 策略建構器")
-    st.caption(f"策略：{strategy_label}")
-
-    try:
-        df = _get_data(stock_id, str(start), str(end))
-    except Exception as e:
-        st.error(f"數據載入失敗：{e}")
-        return
-
-    if df.empty:
-        st.warning("無數據，請確認股票代碼與日期範圍。")
-        return
-
-    # 建立策略實例並產生訊號
-    try:
-        strategy_obj = get_strategy(strategy_key, **params)
-        entries, exits = strategy_obj.generate_signals(df)
-    except Exception as e:
-        st.error(f"訊號產生失敗：{e}")
-        return
-
-    col_info1, col_info2, col_info3 = st.columns(3)
-    col_info1.metric("資料筆數", f"{len(df)} 個交易日")
-    col_info2.metric("進場訊號", f"{int(entries.sum())} 次")
-    col_info3.metric("出場訊號", f"{int(exits.sum())} 次")
-
-    # K線+訊號+指標副圖
-    fig = _build_signal_chart(df, entries, exits, strategy_key, strategy_obj)
-    st.plotly_chart(fig, use_container_width=True)
-
-    # 回測結果
-    if run_btn:
-        with st.spinner("回測執行中..."):
-            try:
-                df_idx = df.set_index("date")
-                engine = TWSEBacktestEngine()
-                metrics = engine.run(
-                    pd.Series(df_idx["close"], dtype=float),
-                    entries, exits,
-                    init_cash=float(init_cash),
-                    broker_discount=float(broker_discount),
-                )
-                report = generate_report(
-                    metrics, strategy_label,
-                    start_date=str(start), end_date=str(end),
-                    init_cash=float(init_cash),
-                )
-            except Exception as e:
-                st.error(f"回測失敗：{e}")
-                return
-
-        st.subheader("📊 績效指標")
-        render_metrics_cards(report)
-
-        # Markdown 報告下載
-        from twquant.backtest.report import to_markdown
-        st.download_button(
-            "⬇ 下載績效報告 (Markdown)",
-            data=to_markdown(report),
-            file_name=f"backtest_{stock_id}_{strategy_key}.md",
-            mime="text/markdown",
+        st.divider()
+        st.header("🎯 階段 2：精篩策略")
+        strat_keys = st.multiselect(
+            "策略（可多選）", _STRAT_KEYS, default=_STRAT_KEYS,
+            format_func=lambda k: _STRAT_LABEL.get(k, k),
         )
+        lookback = st.slider("回看近 N 日內訊號觸發", 1, 10, 5)
+        min_score = st.slider("最低共振分數（命中策略數）", 0, 5, 1)
+
+        run_btn = st.button("🚀 執行漏斗", type="primary", use_container_width=True)
+
+    if not run_btn:
+        st.info("在左側設定條件後，點擊「🚀 執行漏斗」開始兩階段選股。")
+        with st.expander("📖 漏斗邏輯說明", expanded=True):
+            st.markdown("""
+**階段 1（粗篩）— 4 個技術門檻過濾全市場**
+- Close > MA60（趨勢向上，固定）
+- 量比 ≥ 設定值（量未萎縮）
+- RSI 在區間內（避超賣 / 超買陷阱）
+- 20 日漲幅 ≥ 設定值（動能存在）
+- 距 60 日高點跌幅 ≤ 設定值（不買破底股）
+
+**階段 2（精篩）— 5 大策略命中數 ≥ 共振分數**
+- F｜動能精選、H｜量價突破、L｜三線扭轉、M｜RAM 動能、N｜唐奇安突破
+- 同股可命中多策略，分數 = 命中策略數
+- **共振分 ≥ 2 視為強訊號，≥ 3 視為高品質**
+""")
+        return
+
+    if not strat_keys:
+        st.warning("請至少選擇一個策略")
+        return
+
+    with st.spinner("掃描中…全市場約 30–60 秒、單一產業約 5–10 秒"):
+        sids = _get_universe(source, sectors)
+        if not sids:
+            st.warning("無股票符合來源條件")
+            return
+        results, n_stage1 = _run_funnel(
+            tuple(sids), rsi_range[0], rsi_range[1],
+            float(min_vol), float(min_ret20), float(max_dd),
+            tuple(strat_keys), int(lookback),
+        )
+
+    # ── 漏斗統計 ──
+    n_source = len(sids)
+    n_stage2 = len(results)
+    n_resonance = sum(1 for r in results if r["分"] >= 2)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("📥 來源", f"{n_source} 支")
+    c2.metric("📊 階段 1 通過", f"{n_stage1} 支",
+              delta=f"{n_stage1-n_source}" if n_source else None,
+              delta_color="off")
+    c3.metric("🎯 階段 2 通過", f"{n_stage2} 支",
+              delta=f"{n_stage2-n_stage1}" if n_stage1 else None,
+              delta_color="off")
+    c4.metric("⚡ 共振 ≥ 2", f"{n_resonance} 支")
+
+    if not results:
+        st.warning("無候選股。建議放寬條件或更換一鍵模板。")
+        return
+
+    # 過濾共振分
+    df_res = pd.DataFrame(results)
+    df_show = df_res[df_res["分"] >= min_score].copy().sort_values(
+        ["分", "20d漲%"], ascending=[False, False]
+    ).reset_index(drop=True)
+
+    st.divider()
+    st.subheader(f"📋 候選清單（{len(df_show)} 支，分數 ≥ {min_score}）")
+
+    # ── 表格 + 行內操作 ──
+    display_cols = ["代號", "名稱", "產業", "收盤", "RSI", "20d漲%", "距60d高%",
+                    "量比", "RS", "共振策略", "分"]
+    st.dataframe(df_show[display_cols], use_container_width=True, hide_index=True, height=480)
+
+    # ── 一鍵動作：加籃 / 跳頁 02 / 跳頁 06 ──
+    st.divider()
+    st.subheader("⚡ 一鍵動作")
+    col_act1, col_act2, col_act3 = st.columns([2, 2, 2])
+    with col_act1:
+        from twquant.data.basket import add_to_basket, get_basket
+        top_n = st.slider("選前 N 支加入交易籃", 1, min(len(df_show), 20),
+                          min(5, len(df_show)))
+        if st.button("🛒 加入交易籃", use_container_width=True):
+            already = set(get_basket())
+            added = 0
+            for sid in df_show["代號"].head(top_n).tolist():
+                if sid not in already:
+                    add_to_basket(sid)
+                    added += 1
+            st.success(f"已加入 {added} 支（籃內共 {len(get_basket())} 支）")
+
+    with col_act2:
+        selected_for_02 = st.selectbox("跳頁 02 個股分析", df_show["代號"].tolist(),
+                                       format_func=lambda s: f"{s} {df_show.set_index('代號').loc[s, '名稱']}")
+        if st.button("📈 跳頁 02", use_container_width=True):
+            st.session_state["g_current_stock"] = selected_for_02
+            st.session_state["current_stock"] = selected_for_02
+            st.switch_page("pages/02_stock_analysis.py")
+
+    with col_act3:
+        selected_for_06 = st.selectbox("跳頁 06 五策略對照",
+                                       df_show["代號"].tolist(),
+                                       format_func=lambda s: f"{s} {df_show.set_index('代號').loc[s, '名稱']}",
+                                       key="sel_06")
+        if st.button("🆚 跳頁 06", use_container_width=True):
+            row = df_show.set_index("代號").loc[selected_for_06]
+            fired_keys = next((r["_fired_keys"] for r in results
+                              if r["代號"] == selected_for_06), [])
+            st.session_state["g_current_stock"] = selected_for_06
+            st.session_state["current_stock"] = selected_for_06
+            if fired_keys:
+                st.session_state["g_selected_strategy"] = fired_keys[0]
+            st.switch_page("pages/06_vs_benchmark.py")
+
+    # ── CSV 下載 ──
+    csv = df_show[display_cols].to_csv(index=False).encode("utf-8-sig")
+    st.download_button("⬇️ 下載候選 CSV", csv, "funnel_picks.csv", "text/csv")
 
 
 if __name__ == "__main__":
