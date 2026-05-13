@@ -79,4 +79,24 @@ def render_global_sidebar(
                              use_container_width=True, key="bsk_goto07"):
                     st.switch_page("pages/07_portfolio.py")
 
+        # ── 📡 全域同步狀態 widget（最底） ──
+        st.divider()
+        try:
+            from twquant.data.sync_jobs import latest_running_job
+            from twquant.data.auto_sync import last_sync_info
+            job = latest_running_job("data/twquant.db")
+            if job:
+                pct = job["done"] / max(job["total"], 1)
+                type_emoji = {"onboarding": "🎯", "manual": "🔄", "auto": "📡"}.get(
+                    job["job_type"], "📡")
+                st.caption(f"{type_emoji} 同步中：{job['done']}/{job['total']}")
+                st.progress(pct, text=job.get("current_sid") or "初始化...")
+            else:
+                info = last_sync_info("data/twquant.db")
+                mh_icon = "🟢" if info["thread_alive"] else "⚪"
+                st.caption(f"{mh_icon} 同步：{info['up_to_date']}/{info['total']} 最新"
+                           + ("（盤中）" if info["is_market_hours"] else ""))
+        except Exception:
+            pass
+
     return result
