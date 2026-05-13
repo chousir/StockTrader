@@ -6,10 +6,6 @@ from twquant.strategy.builtin.volume_breakout import VolumeBreakout
 from twquant.strategy.builtin.triple_ma_twist import TripleMATwist
 from twquant.strategy.builtin.risk_adj_momentum import RiskAdjMomentum
 from twquant.strategy.builtin.donchian_breakout import DonchianBreakout
-from twquant.strategy.builtin.bollinger_breakout import BollingerBreakout
-from twquant.strategy.builtin.ma_crossover import MACrossover
-from twquant.strategy.builtin.macd_divergence import MACDDivergence
-from twquant.strategy.builtin.rsi_reversal import RSIReversal
 
 try:
     from twquant.strategy.builtin.rust_custom import RustCustomStrategy
@@ -24,11 +20,11 @@ _REGISTRY: dict[str, type[BaseStrategy]] = {
     "triple_ma_twist": TripleMATwist,
     "risk_adj_momentum": RiskAdjMomentum,
     "donchian_breakout": DonchianBreakout,
-    # ── 基礎教學策略 ──
-    "ma_crossover": MACrossover,
-    "macd_divergence": MACDDivergence,
-    "rsi_reversal": RSIReversal,
-    "bollinger_breakout": BollingerBreakout,
+    # ── 軟刪的教學策略（檔案保留於 builtin/，未驗證超額報酬） ──
+    # "ma_crossover": MACrossover,
+    # "macd_divergence": MACDDivergence,
+    # "rsi_reversal": RSIReversal,
+    # "bollinger_breakout": BollingerBreakout,
 }
 
 if _RUST_AVAILABLE:

@@ -1,4 +1,4 @@
-"""Page 4：回測結果 — 5 大生產策略 + MA 雙線，三層佈局（策略摘要 / 資金曲線 / 指標+明細）"""
+"""Page 4：回測結果 — 5 大生產策略，三層佈局（策略摘要 / 資金曲線 / 指標+明細）"""
 
 import sys
 sys.path.insert(0, "src")
@@ -9,7 +9,7 @@ st.set_page_config(page_title="回測結果", page_icon="📊", layout="wide")
 
 _STRAT_KEYS = [
     "momentum_concentrate", "volume_breakout", "triple_ma_twist",
-    "risk_adj_momentum", "donchian_breakout", "ma_crossover",
+    "risk_adj_momentum", "donchian_breakout",
 ]
 _STRAT_LABEL = {
     "momentum_concentrate": "F｜動能精選 ★",
@@ -17,14 +17,12 @@ _STRAT_LABEL = {
     "triple_ma_twist":      "L｜三線扭轉",
     "risk_adj_momentum":    "M｜RAM動能",
     "donchian_breakout":    "N｜唐奇安突破",
-    "ma_crossover":         "MA 黃金交叉",
 }
 
 
 @st.cache_data
 def _run_backtest(stock_id: str, start_date: str, end_date: str,
-                  strategy_key: str, short_w: int = 5, long_w: int = 20,
-                  use_adj: bool = False):
+                  strategy_key: str, use_adj: bool = False):
     import pandas as pd
     from twquant.data.storage import SQLiteStorage
     from twquant.backtest.engine import TWSEBacktestEngine
@@ -46,8 +44,7 @@ def _run_backtest(stock_id: str, start_date: str, end_date: str,
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date").reset_index(drop=True)
 
-    kwargs = {"short_window": short_w, "long_window": long_w} if strategy_key == "ma_crossover" else {}
-    strategy = get_strategy(strategy_key, **kwargs)
+    strategy = get_strategy(strategy_key)
     entries, exits = strategy.generate_signals(df)
     price = pd.Series(df.set_index("date")["close"], dtype=float)
     metrics = TWSEBacktestEngine().run(price, entries, exits)
@@ -121,25 +118,22 @@ def main():
 
     with st.sidebar:
         st.header("回測設定")
-        default_key = st.session_state.get("g_selected_strategy", "ma_crossover")
+        default_key = st.session_state.get("g_selected_strategy", "momentum_concentrate")
         if default_key not in _STRAT_KEYS:
-            default_key = "ma_crossover"
+            default_key = "momentum_concentrate"
         strategy_key = st.selectbox(
             "策略",
             options=_STRAT_KEYS,
             index=_STRAT_KEYS.index(default_key),
             format_func=lambda k: _STRAT_LABEL.get(k, k),
         )
-        short_w, long_w = 5, 20
-        if strategy_key == "ma_crossover":
-            short_w = st.slider("短均線", 3, 30, 5)
-            long_w = st.slider("長均線", 10, 120, 20)
         use_adj = st.checkbox(
             "✅ 使用還原權息收盤價",
             value=False,
             help="需先執行 python scripts/seed_data.py --include adj --stocks <代號>",
         )
         run_btn = st.button("執行回測", type="primary")
+        st.caption("💡 想看 5 策略並排對照？→ 跳「頁 06 策略 vs 基準」")
 
     if not run_btn:
         st.info("請在左側設定參數後點擊「執行回測」")
@@ -147,7 +141,7 @@ def main():
 
     with st.spinner("回測執行中..."):
         report, df = _run_backtest(
-            stock_id, str(start), str(end), strategy_key, short_w, long_w, use_adj
+            stock_id, str(start), str(end), strategy_key, use_adj
         )
 
     # ── Layer 1：策略摘要 ──
