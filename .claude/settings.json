@@ -6,8 +6,27 @@
       "Bash(python -c ' *)",
       "Skill(update-config)",
       "Skill(update-config:*)",
-      "Write",
-      "Edit"
+      "Bash(python -m py_compile src/twquant/backtest/portfolio.py)",
+      "Bash(python -m py_compile src/twquant/dashboard/pages/05_screener.py)",
+      "Bash(python -m py_compile src/twquant/dashboard/pages/07_portfolio_backtest.py)",
+      "Bash(python -m py_compile src/twquant/dashboard/pages/08_signal_scanner.py)",
+      "Bash(python -c \"import pandas; print\\(pandas.__version__\\)\")",
+      "Bash(sed -i 's/\\\\.shift\\(1\\)\\\\.fillna\\(False\\)\\\\.infer_objects\\(copy=False\\)\\\\.astype\\(bool\\)/.shift\\(1, fill_value=False\\)/g' \\\\ *)",
+      "Bash(python -m py_compile src/twquant/strategy/builtin/momentum_concentrate.py src/twquant/strategy/builtin/volume_breakout.py src/twquant/strategy/builtin/triple_ma_twist.py src/twquant/strategy/builtin/risk_adj_momentum.py src/twquant/strategy/builtin/donchian_breakout.py src/twquant/dashboard/pages/04_backtest_result.py)",
+      "Bash(xargs cat)",
+      "Bash(sqlite3 /workspaces/StockTrader/data/twquant.db \".tables\")",
+      "Bash(sqlite3 /workspaces/StockTrader/data/twquant.db \"SELECT name FROM sqlite_master WHERE type='table';\")",
+      "Bash(sqlite3 /workspaces/StockTrader/data/twquant.db \"SELECT COUNT\\(*\\) as symbols FROM _symbols; SELECT COUNT\\(*\\) as total_rows FROM \\(SELECT COUNT\\(*\\) FROM data_daily_price_2330 UNION ALL SELECT COUNT\\(*\\) FROM data_daily_price_2454\\);\")",
+      "Bash(sqlite3 /workspaces/StockTrader/data/twquant.db \"SELECT COUNT\\(*\\) FROM data_daily_price_2330; SELECT MAX\\(date\\) FROM data_daily_price_2330;\")",
+      "Bash(sqlite3 /workspaces/StockTrader/data/twquant.db \"SELECT COUNT\\(DISTINCT name\\) FROM sqlite_master WHERE type='table' AND name LIKE 'data_daily_price_%';\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/twquant/dashboard/pages/02_stock_analysis.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "Bash(python -c \"import sys; sys.path.insert\\(0, 'src'\\); from twquant.strategy.scanner import scan_universe; print\\('scanner import OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/twquant/dashboard/pages/08_signal_scanner.py'\\).read\\(\\)\\); print\\('page 08 syntax OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/twquant/dashboard/pages/05_screener.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/twquant/dashboard/pages/09_strategy_compare.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\")"
+    ],
+    "additionalDirectories": [
+      "/workspaces/StockTrader/src/twquant/strategy/builtin"
     ]
   }
 }
