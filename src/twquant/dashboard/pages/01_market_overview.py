@@ -207,41 +207,55 @@ def main():
             fig_s.update_layout(height=350, margin=dict(l=10,r=10,t=10,b=10))
             st.plotly_chart(fig_s, use_container_width=True)
 
-    st.divider()
+    # ── ⚖️ 兩板塊強弱對比 ─────────────────────────────────────────────────
+    with st.expander("⚖️ 兩板塊強弱對比"):
+        from twquant.data.universe import list_sectors, list_by_sector_db
+        all_sec = list_sectors()
+        c1, c2 = st.columns(2)
+        sec_a = c1.selectbox("板塊 A", all_sec, index=0, key="p01_sec_a")
+        default_b = 1 if len(all_sec) > 1 else 0
+        sec_b = c2.selectbox("板塊 B", all_sec, index=default_b, key="p01_sec_b")
 
-    # ── 板塊個股漲跌排行 ─────────────────────────────────────────────────
-    st.subheader("📊 個股今日行情（依板塊）")
-    all_sids = list({sid for sec in ANALYST_UNIVERSE.values()
-                     for sid, _ in sec})
-    daily_data = _load_latest(tuple(all_sids), days_back=5)
+        def _sec_perf(sec_name: str) -> dict:
+            sids = [s for s, _ in list_by_sector_db(sec_name)]
+            storage_local = SQLiteStorage(DB_PATH)
+            r5, r20, r60 = [], [], []
+            for sid in sids:
+                df = storage_local.load(f"daily_price/{sid}")
+                if df.empty or len(df) < 61:
+                    continue
+                cl = df["close"].astype(float)
+                p = float(cl.iloc[-1])
+                if len(cl) >= 6:  r5.append(p / float(cl.iloc[-6]) - 1)
+                if len(cl) >= 21: r20.append(p / float(cl.iloc[-21]) - 1)
+                if len(cl) >= 61: r60.append(p / float(cl.iloc[-61]) - 1)
+            avg = lambda lst: sum(lst) / len(lst) * 100 if lst else 0
+            return {"5d": avg(r5), "20d": avg(r20), "60d": avg(r60), "n": len(sids)}
 
-    rows_today = []
-    for sid in all_sids:
-        df = daily_data.get(sid)
-        if df is None or len(df) < 2: continue
-        p  = float(df.iloc[-1]["close"]); pp = float(df.iloc[-2]["close"])
-        chg_p = (p - pp) / pp * 100
-        sector = next((s for s, stocks in ANALYST_UNIVERSE.items()
-                       if any(x[0] == sid for x in stocks)), "其他")
-        rows_today.append({"代號": sid, "名稱": get_name(sid), "板塊": sector,
-                           "現價": p, "漲跌幅(%)": round(chg_p, 2),
-                           "成交量(張)": int(df.iloc[-1]["volume"]) // 1000})
-
-    if rows_today:
-        df_today = pd.DataFrame(rows_today).sort_values("漲跌幅(%)", ascending=False)
-        sectors_tab = ["全部"] + list(ANALYST_UNIVERSE.keys())
-        tabs = st.tabs(sectors_tab)
-        for i, tab in enumerate(tabs):
-            with tab:
-                dff = df_today if i == 0 else df_today[df_today["板塊"] == sectors_tab[i]]
-                # 漲跌幅上色
-                def color_chg(val):
-                    c = "#EF4444" if val > 0 else ("#22C55E" if val < 0 else "#9CA3AF")
-                    return f"color: {c}"
-                styled = dff.copy()
-                styled["漲跌幅(%)"] = styled["漲跌幅(%)"].apply(lambda v: f"{v:+.2f}%")
-                st.dataframe(styled[["代號","名稱","板塊","現價","漲跌幅(%)","成交量(張)"]],
-                             use_container_width=True, hide_index=True, height=320)
+        with st.spinner("計算中..."):
+            pa = _sec_perf(sec_a)
+            pb = _sec_perf(sec_b)
+        cmp_fig = go.Figure(data=[
+            go.Bar(name=sec_a, x=["近 5 日", "近 20 日", "近 60 日"],
+                   y=[pa["5d"], pa["20d"], pa["60d"]],
+                   marker_color="#3B82F6",
+                   text=[f"{v:+.1f}%" for v in (pa["5d"], pa["20d"], pa["60d"])],
+                   textposition="outside"),
+            go.Bar(name=sec_b, x=["近 5 日", "近 20 日", "近 60 日"],
+                   y=[pb["5d"], pb["20d"], pb["60d"]],
+                   marker_color="#F97316",
+                   text=[f"{v:+.1f}%" for v in (pb["5d"], pb["20d"], pb["60d"])],
+                   textposition="outside"),
+        ])
+        cmp_fig.update_layout(height=300, barmode="group", yaxis_title="平均報酬 %",
+                              hovermode="x unified",
+                              legend=dict(orientation="h", y=1.1),
+                              margin=dict(l=40, r=20, t=20, b=20))
+        cmp_fig.add_hline(y=0, line_color="#4B5563", line_width=1)
+        st.plotly_chart(cmp_fig, use_container_width=True)
+        sl, sr = st.columns(2)
+        sl.caption(f"**{sec_a}** 樣本：{pa['n']} 支")
+        sr.caption(f"**{sec_b}** 樣本：{pb['n']} 支")
 
     st.divider()
 
