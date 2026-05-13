@@ -13,8 +13,7 @@ services:
       - ARCTICDB_URI=lmdb:///app/data/arcticdb
       - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
       - TZ=Asia/Taipei
-      # 容器行為旗標（皆可選填，留空則用 Dockerfile 預設）
-      - AUTO_SEED=${AUTO_SEED:-true}     # 首次啟動自動 seed_data.py --universe（需 FINMIND_API_TOKEN）
+      # 容器行為旗標（lazy 啟動：不再自動 seed，改由 dashboard onboarding 互動式抓取）
       - ENABLE_CRON=${ENABLE_CRON:-true} # 啟動 cron daemon，每交易日 14:30 自動同步+掃描+推播
     restart: unless-stopped
 
