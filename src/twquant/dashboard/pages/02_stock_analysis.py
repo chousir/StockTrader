@@ -11,6 +11,49 @@ st.set_page_config(page_title="個股分析", page_icon="📈", layout="wide")
 DB_PATH = "data/twquant.db"
 
 
+@st.cache_data(ttl=1800, show_spinner="跑 5 策略 3 年回測…")
+def _quick_5strat_backtest(stock_id: str, start: str, end: str) -> list[dict]:
+    """個股 5 策略 vs 0050 快速回測，回傳精簡結果列表"""
+    import pandas as pd
+    from twquant.data.storage import SQLiteStorage
+    from twquant.backtest.engine import TWSEBacktestEngine
+    from twquant.strategy.registry import get_strategy
+    storage = SQLiteStorage(DB_PATH)
+    df = storage.load(f"daily_price/{stock_id}", start_date=start, end_date=end)
+    df_bench = storage.load("daily_price/0050", start_date=start, end_date=end)
+    if df.empty or len(df) < 120 or df_bench.empty:
+        return []
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date").reset_index(drop=True)
+    price = pd.Series(df["close"].astype(float).values, index=pd.to_datetime(df["date"]))
+    bench_c = df_bench["close"].astype(float)
+    bench_ret = float(bench_c.iloc[-1] / bench_c.iloc[0] - 1)
+    keys = ["momentum_concentrate", "volume_breakout", "triple_ma_twist",
+            "risk_adj_momentum", "donchian_breakout"]
+    label_map = {"momentum_concentrate": "F動能", "volume_breakout": "H量價",
+                 "triple_ma_twist": "L三線", "risk_adj_momentum": "M-RAM",
+                 "donchian_breakout": "N唐奇安"}
+    rows = []
+    for k in keys:
+        try:
+            entries, exits = get_strategy(k).generate_signals(df)
+            if entries.sum() == 0:
+                continue
+            m = TWSEBacktestEngine().run(price, entries, exits, init_cash=1_000_000)
+            rows.append({
+                "策略": label_map[k],
+                "總報酬": f"{m['total_return']:.1%}",
+                "超額α": f"{m['total_return']-bench_ret:+.1%}",
+                "Sharpe": f"{m['sharpe_ratio']:.2f}",
+                "MDD": f"{m['max_drawdown']:.1%}",
+                "勝率": f"{m['win_rate']:.1%}" if not pd.isna(m['win_rate']) else "N/A",
+                "_bench_ret": bench_ret,
+            })
+        except Exception:
+            pass
+    return rows
+
+
 @st.cache_data(ttl=1800)
 def _load_daily(stock_id: str, start_date: str, end_date: str):
     import pandas as pd
@@ -252,235 +295,242 @@ def main():
         e3.metric("最低", f"{latest['low']:.1f}")
         e4.metric("成交量", f"{latest['volume']/1000:,.0f} 張")
 
-    # ── 3 Tabs（技術 / 籌碼 / 基本面） ──
-    tab_tech, tab_institutional, tab_fundamental = st.tabs([
-        "📈 技術", "🏦 籌碼", "💰 基本面"
-    ])
+    # ── 主區：技術核心（永遠顯示） ──
+    ma_periods = st.multiselect(
+        "均線週期", [5, 10, 20, 60], default=[5, 20],
+        key="ma_periods_analysis", label_visibility="collapsed",
+    )
+    fig = create_tw_stock_chart(df, ma_periods=ma_periods)
+    st.plotly_chart(fig, use_container_width=True)
 
-    with tab_tech:
-        ma_periods = st.multiselect(
-            "均線週期", [5, 10, 20, 60], default=[5, 20],
-            key="ma_periods_analysis", label_visibility="collapsed",
-        )
-        fig = create_tw_stock_chart(df, ma_periods=ma_periods)
-        st.plotly_chart(fig, use_container_width=True)
+    # 技術指標（可展開）
+    with st.expander("📊 技術指標（RSI / MACD / KD）"):
+        ind_fig = _render_indicator_chart(df)
+        st.plotly_chart(ind_fig, use_container_width=True)
 
-        # 技術指標（可展開）
-        with st.expander("📊 技術指標（RSI / MACD / KD）"):
-            ind_fig = _render_indicator_chart(df)
-            st.plotly_chart(ind_fig, use_container_width=True)
-
-        # 技術水位 + 區間統計（可展開）
-        with st.expander("📐 技術水位 + 區間統計"):
-            from twquant.indicators.basic import compute_bollinger
-            close = df["close"].astype(float)
-            ma5   = float(close.rolling(5).mean().iloc[-1])
-            ma20  = float(close.rolling(20).mean().iloc[-1])
-            ma60  = float(close.rolling(60).mean().iloc[-1]) if len(df) >= 60 else float("nan")
-            upper_bb, _, _ = compute_bollinger(close)
-            curr  = float(close.iloc[-1])
-            w1, w2, w3, w4 = st.columns(4)
-            w1.metric("MA5",  f"{ma5:.1f}",  f"{'↑' if curr>ma5 else '↓'}")
-            w2.metric("MA20", f"{ma20:.1f}", f"{'↑' if curr>ma20 else '↓'}")
-            if not pd.isna(ma60):
-                w3.metric("MA60", f"{ma60:.1f}", f"{'↑' if curr>ma60 else '↓'}")
-            w4.metric("布林上軌", f"{upper_bb.iloc[-1]:.1f}")
-            st.divider()
-            period_ret = (float(close.iloc[-1]) / float(close.iloc[0]) - 1) * 100
-            s1, s2, s3, s4 = st.columns(4)
-            s1.metric("區間最高", f"{df['high'].max():.1f}")
-            s2.metric("區間最低", f"{df['low'].min():.1f}")
-            s3.metric("區間漲跌幅", f"{period_ret:+.2f}%")
-            s4.metric("日均成交量", f"{df['volume'].mean()/1000:,.0f} 張")
-
-        # ── RS 相對強弱 vs 0050 ──
-        with st.expander("📡 RS 相對強弱（vs 0050）"):
-            import plotly.graph_objects as go
-            df_bench = _load_daily("0050", str(start_date), str(end_date))
-            if df_bench is not None and not df_bench.empty:
-                s_close = df.set_index("date")["close"].astype(float)
-                b_close = df_bench.set_index("date")["close"].astype(float)
-                common = s_close.index.intersection(b_close.index)
-                if len(common) >= 2:
-                    s_norm = s_close[common] / float(s_close[common].iloc[0])
-                    b_norm = b_close[common] / float(b_close[common].iloc[0])
-                    rs = (s_norm / b_norm).reset_index()
-                    rs.columns = ["date", "RS"]
-                    rs60_high = float(rs["RS"].iloc[-60:].max()) if len(rs) >= 60 else float(rs["RS"].max())
-                    fig_rs = go.Figure()
-                    fig_rs.add_trace(go.Scatter(x=rs["date"], y=rs["RS"], name="RS",
-                        line=dict(color="#F97316", width=1.8)))
-                    fig_rs.add_hline(y=1.0, line_dash="dash", line_color="#6B7280", line_width=1)
-                    if len(rs) >= 60:
-                        fig_rs.add_hline(y=rs60_high, line_dash="dot", line_color="#EF4444",
-                                         annotation_text="近60日RS高點", line_width=1)
-                    fig_rs.update_layout(height=240, margin=dict(l=40,r=20,t=20,b=20),
-                                         hovermode="x unified", yaxis_title="RS (>1 跑贏大盤)")
-                    st.plotly_chart(fig_rs, use_container_width=True)
-                    st.caption(f"RS > 1 代表跑贏 0050 基準。目前 RS = {float(rs['RS'].iloc[-1]):.3f}")
-                else:
-                    st.caption("RS 計算需要個股與 0050 有共同交易日")
-            else:
-                st.caption("0050 資料未入庫，無法計算 RS")
-
-        # ── Beta + 對大盤敏感度 ──
-        with st.expander("📐 Beta + 90 日相關性（vs 0050）"):
-            import plotly.graph_objects as go
-            df_bench = _load_daily("0050", str(start_date), str(end_date))
-            if df_bench is not None and not df_bench.empty:
-                s_close = df.set_index("date")["close"].astype(float)
-                b_close = df_bench.set_index("date")["close"].astype(float)
-                common = s_close.index.intersection(b_close.index)
-                if len(common) >= 30:
-                    s_ret = s_close[common].pct_change().dropna()
-                    b_ret = b_close[common].pct_change().dropna()
-                    common2 = s_ret.index.intersection(b_ret.index)
-                    s_r, b_r = s_ret[common2].values, b_ret[common2].values
-                    import numpy as np
-                    beta = float(np.cov(s_r, b_r)[0, 1] / np.var(b_r)) if np.var(b_r) > 0 else float("nan")
-                    corr90 = float(pd.Series(s_r[-90:]).corr(pd.Series(b_r[-90:]))) if len(s_r) >= 90 else float(pd.Series(s_r).corr(pd.Series(b_r)))
-                    b1, b2 = st.columns(2)
-                    b1.metric("Beta（全期）", f"{beta:.2f}",
-                              help="Beta>1 代表波動大於大盤；Beta<1 代表相對抗跌")
-                    b2.metric("90日相關性", f"{corr90:.2f}")
-                    fig_sc = go.Figure()
-                    fig_sc.add_trace(go.Scatter(x=b_r * 100, y=s_r * 100, mode="markers",
-                        marker=dict(size=4, color="#3B82F6", opacity=0.5), name="日報酬"))
-                    x_line = np.linspace(min(b_r), max(b_r), 50)
-                    fig_sc.add_trace(go.Scatter(x=x_line * 100, y=(beta * x_line) * 100,
-                        mode="lines", name=f"β={beta:.2f}", line=dict(color="#F97316", width=2)))
-                    fig_sc.update_layout(height=280, xaxis_title="0050 日報酬%",
-                        yaxis_title=f"{stock_id} 日報酬%", hovermode="closest",
-                        margin=dict(l=40,r=20,t=20,b=20))
-                    st.plotly_chart(fig_sc, use_container_width=True)
-                else:
-                    st.caption("需要至少 30 個共同交易日才能計算 Beta")
-            else:
-                st.caption("0050 資料未入庫，無法計算 Beta")
-
-        # ── 建倉計算器 ──
-        with st.expander("💰 建倉計算器（ATR 停損 + 部位規模）"):
-            from twquant.indicators.basic import compute_atr
-            from twquant.dashboard.components.position_calc import render_position_calc
-            close_s = df["close"].astype(float)
-            atr14 = float(compute_atr(df["high"].astype(float), df["low"].astype(float), close_s, 14).iloc[-1])
-            render_position_calc(float(close_s.iloc[-1]), atr14)
-
-        # TradingView 外部技術評分（可展開）
-        with st.expander("🔭 外部技術評分（TradingView）"):
-            render_tv_technicals(stock_id, height=320)
-
-    with tab_institutional:
-        import plotly.graph_objects as go
-        st.caption("外資、投信、自營商每日買賣超（來源：FinMind）")
-        inst_start = (pd.Timestamp.today() - pd.DateOffset(months=6)).strftime("%Y-%m-%d")
-        df_inst = _load_institutional(stock_id, inst_start, str(end_date))
-        if df_inst is None or df_inst.empty:
-            st.info("⚠️ 無法取得法人資料，請確認 FinMind Token 已設定（設定精靈 → API Token）")
-        else:
-            # 找出外資/投信/自營商 net 欄位
-            cols_buy = [c for c in df_inst.columns if c.endswith("_buy")]
-            cols_sell = [c for c in df_inst.columns if c.endswith("_sell")]
-            INST_NAME_MAP = {
-                "Foreign_Investor": "外資",
-                "Investment_Trust": "投信",
-                "Dealer_self": "自營商(自行)",
-                "Dealer": "自營商",
-            }
-            inst_colors = {"外資": "#3B82F6", "投信": "#F97316", "自營商": "#A855F7", "自營商(自行)": "#A855F7"}
-
-            # 累計淨買超（近60日）
-            df_inst["date"] = pd.to_datetime(df_inst["date"])
-            df_inst = df_inst.tail(60)
-
-            fig_inst = go.Figure()
-            for buy_col in cols_buy:
-                name_key = buy_col.replace("_buy", "")
-                sell_col = name_key + "_sell"
-                label = INST_NAME_MAP.get(name_key, name_key)
-                if sell_col not in df_inst.columns:
-                    continue
-                net = df_inst[buy_col].fillna(0) - df_inst[sell_col].fillna(0)
-                color = inst_colors.get(label, "#94A3B8")
-                bar_colors = [color if v >= 0 else "#EF4444" for v in net]
-                fig_inst.add_trace(go.Bar(
-                    x=df_inst["date"], y=net / 1000,
-                    name=label,
-                    marker_color=bar_colors,
-                    hovertemplate=f"<b>{label}</b>: %{{y:+,.0f}} 張<extra></extra>",
-                ))
-
-            fig_inst.update_layout(
-                height=360, barmode="group",
-                xaxis_title="日期", yaxis_title="淨買超（千股）",
-                hovermode="x unified",
-                legend=dict(orientation="h", y=1.05),
-                margin=dict(l=40, r=20, t=20, b=20),
-            )
-            st.plotly_chart(fig_inst, use_container_width=True)
-
+    # 技術水位 + 區間統計（可展開）
+    with st.expander("📐 技術水位 + 區間統計"):
+        from twquant.indicators.basic import compute_bollinger
+        close = df["close"].astype(float)
+        ma5   = float(close.rolling(5).mean().iloc[-1])
+        ma20  = float(close.rolling(20).mean().iloc[-1])
+        ma60  = float(close.rolling(60).mean().iloc[-1]) if len(df) >= 60 else float("nan")
+        upper_bb, _, _ = compute_bollinger(close)
+        curr  = float(close.iloc[-1])
+        w1, w2, w3, w4 = st.columns(4)
+        w1.metric("MA5",  f"{ma5:.1f}",  f"{'↑' if curr>ma5 else '↓'}")
+        w2.metric("MA20", f"{ma20:.1f}", f"{'↑' if curr>ma20 else '↓'}")
+        if not pd.isna(ma60):
+            w3.metric("MA60", f"{ma60:.1f}", f"{'↑' if curr>ma60 else '↓'}")
+        w4.metric("布林上軌", f"{upper_bb.iloc[-1]:.1f}")
         st.divider()
-        st.caption("📋 月營收 MoM（月增率）/ YoY（年增率），來源：FinMind")
-        rev_start = (pd.Timestamp.today() - pd.DateOffset(years=2)).strftime("%Y-%m-%d")
-        df_rev = _load_monthly_revenue(stock_id, rev_start)
-        if df_rev is None or df_rev.empty:
-            st.info("⚠️ 無法取得月營收資料，請確認 FinMind Token 已設定")
-        else:
-            rev_col = next((c for c in ["revenue", "Revenue", "revenue_month"] if c in df_rev.columns), None)
-            if rev_col is None:
-                st.warning(f"欄位名稱異常：{list(df_rev.columns)}")
-            else:
-                df_rev["revenue_val"] = pd.to_numeric(df_rev[rev_col], errors="coerce")
-                df_rev = df_rev.dropna(subset=["revenue_val"])
-                df_rev["mom"] = df_rev["revenue_val"].pct_change(1) * 100
-                df_rev["yoy"] = df_rev["revenue_val"].pct_change(12) * 100
-                mom_colors = ["#22C55E" if v >= 0 else "#EF4444" for v in df_rev["mom"].fillna(0)]
-                fig_rev = go.Figure()
-                fig_rev.add_trace(go.Bar(x=df_rev["date"], y=df_rev["mom"], name="MoM%",
-                                         marker_color=mom_colors))
-                fig_rev.add_trace(go.Scatter(x=df_rev["date"], y=df_rev["yoy"], name="YoY%",
-                                             mode="lines+markers", line=dict(color="#F97316", width=2)))
-                fig_rev.add_hline(y=0, line_color="#4B5563", line_width=1)
-                fig_rev.update_layout(height=280, hovermode="x unified", yaxis_title="%",
-                                      legend=dict(orientation="h", y=1.05),
-                                      margin=dict(l=40, r=20, t=20, b=20))
-                st.plotly_chart(fig_rev, use_container_width=True)
+        period_ret = (float(close.iloc[-1]) / float(close.iloc[0]) - 1) * 100
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("區間最高", f"{df['high'].max():.1f}")
+        s2.metric("區間最低", f"{df['low'].min():.1f}")
+        s3.metric("區間漲跌幅", f"{period_ret:+.2f}%")
+        s4.metric("日均成交量", f"{df['volume'].mean()/1000:,.0f} 張")
 
-    with tab_fundamental:
-        from plotly.subplots import make_subplots as _msp2
-        st.caption("本益比(PER) / 股價淨值比(PBR) / 殖利率，來源：FinMind")
-        fund_start = (pd.Timestamp.today() - pd.DateOffset(years=3)).strftime("%Y-%m-%d")
-        df_fund = _load_per_pbr(stock_id, fund_start)
-        if df_fund is None or df_fund.empty:
-            st.info("⚠️ 無法取得本益比/殖利率資料，請確認 FinMind Token 已設定")
-        else:
-            per_col = next((c for c in ["PER", "per", "price_earnings_ratio"] if c in df_fund.columns), None)
-            pbr_col = next((c for c in ["PBR", "pbr", "price_book_ratio"] if c in df_fund.columns), None)
-            div_col = next((c for c in ["dividend_yield", "DividendYield", "yield"] if c in df_fund.columns), None)
-            if per_col is None and pbr_col is None:
-                st.warning(f"欄位名稱異常：{list(df_fund.columns)}")
+    # ── RS 相對強弱 vs 0050 ──
+    with st.expander("📡 RS 相對強弱（vs 0050）"):
+        import plotly.graph_objects as go
+        df_bench = _load_daily("0050", str(start_date), str(end_date))
+        if df_bench is not None and not df_bench.empty:
+            s_close = df.set_index("date")["close"].astype(float)
+            b_close = df_bench.set_index("date")["close"].astype(float)
+            common = s_close.index.intersection(b_close.index)
+            if len(common) >= 2:
+                s_norm = s_close[common] / float(s_close[common].iloc[0])
+                b_norm = b_close[common] / float(b_close[common].iloc[0])
+                rs = (s_norm / b_norm).reset_index()
+                rs.columns = ["date", "RS"]
+                rs60_high = float(rs["RS"].iloc[-60:].max()) if len(rs) >= 60 else float(rs["RS"].max())
+                fig_rs = go.Figure()
+                fig_rs.add_trace(go.Scatter(x=rs["date"], y=rs["RS"], name="RS",
+                    line=dict(color="#F97316", width=1.8)))
+                fig_rs.add_hline(y=1.0, line_dash="dash", line_color="#6B7280", line_width=1)
+                if len(rs) >= 60:
+                    fig_rs.add_hline(y=rs60_high, line_dash="dot", line_color="#EF4444",
+                                     annotation_text="近60日RS高點", line_width=1)
+                fig_rs.update_layout(height=240, margin=dict(l=40,r=20,t=20,b=20),
+                                     hovermode="x unified", yaxis_title="RS (>1 跑贏大盤)")
+                st.plotly_chart(fig_rs, use_container_width=True)
+                st.caption(f"RS > 1 代表跑贏 0050 基準。目前 RS = {float(rs['RS'].iloc[-1]):.3f}")
             else:
-                latest_fund = df_fund.iloc[-1]
-                f1, f2, f3 = st.columns(3)
-                f1.metric("最新 PER", f"{float(latest_fund[per_col]):.1f}x"
-                          if per_col and pd.notna(latest_fund.get(per_col)) else "N/A")
-                f2.metric("最新 PBR", f"{float(latest_fund[pbr_col]):.2f}x"
-                          if pbr_col and pd.notna(latest_fund.get(pbr_col)) else "N/A")
-                f3.metric("最新殖利率", f"{float(latest_fund[div_col]):.2f}%"
-                          if div_col and pd.notna(latest_fund.get(div_col)) else "N/A")
-                fig_fund = _msp2(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
-                                  subplot_titles=("本益比 (PER)", "殖利率 (%)"))
-                if per_col:
-                    df_fund[per_col] = pd.to_numeric(df_fund[per_col], errors="coerce")
-                    fig_fund.add_trace(go.Scatter(x=df_fund["date"], y=df_fund[per_col],
-                                                  name="PER", line=dict(color="#3B82F6", width=2)), row=1, col=1)
-                if div_col:
-                    df_fund[div_col] = pd.to_numeric(df_fund[div_col], errors="coerce")
-                    fig_fund.add_trace(go.Scatter(x=df_fund["date"], y=df_fund[div_col],
-                                                  name="殖利率", line=dict(color="#22C55E", width=2)), row=2, col=1)
-                fig_fund.update_layout(height=380, hovermode="x unified", showlegend=False,
-                                       margin=dict(l=40, r=20, t=40, b=20))
-                st.plotly_chart(fig_fund, use_container_width=True)
+                st.caption("RS 計算需要個股與 0050 有共同交易日")
+        else:
+            st.caption("0050 資料未入庫，無法計算 RS")
+
+    # ── Beta + 對大盤敏感度 ──
+    with st.expander("📐 Beta + 90 日相關性（vs 0050）"):
+        import plotly.graph_objects as go
+        df_bench = _load_daily("0050", str(start_date), str(end_date))
+        if df_bench is not None and not df_bench.empty:
+            s_close = df.set_index("date")["close"].astype(float)
+            b_close = df_bench.set_index("date")["close"].astype(float)
+            common = s_close.index.intersection(b_close.index)
+            if len(common) >= 30:
+                s_ret = s_close[common].pct_change().dropna()
+                b_ret = b_close[common].pct_change().dropna()
+                common2 = s_ret.index.intersection(b_ret.index)
+                s_r, b_r = s_ret[common2].values, b_ret[common2].values
+                import numpy as np
+                beta = float(np.cov(s_r, b_r)[0, 1] / np.var(b_r)) if np.var(b_r) > 0 else float("nan")
+                corr90 = float(pd.Series(s_r[-90:]).corr(pd.Series(b_r[-90:]))) if len(s_r) >= 90 else float(pd.Series(s_r).corr(pd.Series(b_r)))
+                b1, b2 = st.columns(2)
+                b1.metric("Beta（全期）", f"{beta:.2f}",
+                          help="Beta>1 代表波動大於大盤；Beta<1 代表相對抗跌")
+                b2.metric("90日相關性", f"{corr90:.2f}")
+                fig_sc = go.Figure()
+                fig_sc.add_trace(go.Scatter(x=b_r * 100, y=s_r * 100, mode="markers",
+                    marker=dict(size=4, color="#3B82F6", opacity=0.5), name="日報酬"))
+                x_line = np.linspace(min(b_r), max(b_r), 50)
+                fig_sc.add_trace(go.Scatter(x=x_line * 100, y=(beta * x_line) * 100,
+                    mode="lines", name=f"β={beta:.2f}", line=dict(color="#F97316", width=2)))
+                fig_sc.update_layout(height=280, xaxis_title="0050 日報酬%",
+                    yaxis_title=f"{stock_id} 日報酬%", hovermode="closest",
+                    margin=dict(l=40,r=20,t=20,b=20))
+                st.plotly_chart(fig_sc, use_container_width=True)
+            else:
+                st.caption("需要至少 30 個共同交易日才能計算 Beta")
+        else:
+            st.caption("0050 資料未入庫，無法計算 Beta")
+
+    # ── 建倉計算器 ──
+    with st.expander("💰 建倉計算器（ATR 停損 + 部位規模）"):
+        from twquant.indicators.basic import compute_atr
+        from twquant.dashboard.components.position_calc import render_position_calc
+        close_s = df["close"].astype(float)
+        atr14 = float(compute_atr(df["high"].astype(float), df["low"].astype(float), close_s, 14).iloc[-1])
+        render_position_calc(float(close_s.iloc[-1]), atr14)
+
+    # ── 🚀 快速回測（5 策略 vs 0050）── 新增 ──
+    with st.expander("🚀 快速回測（5 策略 vs 0050）"):
+        qt_start = (pd.Timestamp(end_date) - pd.DateOffset(years=3)).strftime("%Y-%m-%d")
+        qt_end = str(end_date)
+        rows = _quick_5strat_backtest(stock_id, qt_start, qt_end)
+        if rows:
+            st.caption(f"區間 {qt_start} ~ {qt_end} | 0050 同期報酬：{rows[0].get('_bench_ret', 0):+.1%}")
+            display = pd.DataFrame([
+                {k: v for k, v in r.items() if not k.startswith("_")} for r in rows
+            ])
+            st.dataframe(display, use_container_width=True, hide_index=True)
+            if st.button("📊 深入跳頁 06 看完整對照", use_container_width=True, key="qt_jump06"):
+                st.switch_page("pages/06_vs_benchmark.py")
+        else:
+            st.caption("資料不足或無策略觸發，無法快速回測")
+
+    # TradingView 外部技術評分（可展開）
+    with st.expander("🔭 外部技術評分（TradingView）"):
+        render_tv_technicals(stock_id, height=320)
+
+    # ── 📊 籌碼 / 月營收 / PER 合一 expander ──
+    with st.expander("📊 籌碼 / 月營收 / PER（基本面）"):
+        sub_inst, sub_rev, sub_per = st.tabs(["🏦 法人籌碼", "📋 月營收", "💰 PER/PBR/殖利率"])
+
+        with sub_inst:
+            import plotly.graph_objects as go
+            st.caption("外資、投信、自營商每日買賣超（來源：FinMind）")
+            inst_start = (pd.Timestamp.today() - pd.DateOffset(months=6)).strftime("%Y-%m-%d")
+            df_inst = _load_institutional(stock_id, inst_start, str(end_date))
+            if df_inst is None or df_inst.empty:
+                st.info("⚠️ 無法取得法人資料，請確認 FinMind Token 已設定（設定精靈 → API Token）")
+            else:
+                cols_buy = [c for c in df_inst.columns if c.endswith("_buy")]
+                INST_NAME_MAP = {"Foreign_Investor": "外資", "Investment_Trust": "投信",
+                                 "Dealer_self": "自營商(自行)", "Dealer": "自營商"}
+                inst_colors = {"外資": "#3B82F6", "投信": "#F97316",
+                               "自營商": "#A855F7", "自營商(自行)": "#A855F7"}
+                df_inst["date"] = pd.to_datetime(df_inst["date"])
+                df_inst = df_inst.tail(60)
+                fig_inst = go.Figure()
+                for buy_col in cols_buy:
+                    name_key = buy_col.replace("_buy", "")
+                    sell_col = name_key + "_sell"
+                    if sell_col not in df_inst.columns:
+                        continue
+                    label = INST_NAME_MAP.get(name_key, name_key)
+                    net = df_inst[buy_col].fillna(0) - df_inst[sell_col].fillna(0)
+                    color = inst_colors.get(label, "#94A3B8")
+                    bar_colors = [color if v >= 0 else "#EF4444" for v in net]
+                    fig_inst.add_trace(go.Bar(
+                        x=df_inst["date"], y=net / 1000, name=label, marker_color=bar_colors,
+                        hovertemplate=f"<b>{label}</b>: %{{y:+,.0f}} 張<extra></extra>",
+                    ))
+                fig_inst.update_layout(height=360, barmode="group",
+                    xaxis_title="日期", yaxis_title="淨買超（千股）", hovermode="x unified",
+                    legend=dict(orientation="h", y=1.05),
+                    margin=dict(l=40, r=20, t=20, b=20))
+                st.plotly_chart(fig_inst, use_container_width=True)
+
+        with sub_rev:
+            import plotly.graph_objects as go
+            st.caption("月營收 MoM（月增率）/ YoY（年增率），來源：FinMind")
+            rev_start = (pd.Timestamp.today() - pd.DateOffset(years=2)).strftime("%Y-%m-%d")
+            df_rev = _load_monthly_revenue(stock_id, rev_start)
+            if df_rev is None or df_rev.empty:
+                st.info("⚠️ 無法取得月營收資料，請確認 FinMind Token 已設定")
+            else:
+                rev_col = next((c for c in ["revenue", "Revenue", "revenue_month"]
+                                if c in df_rev.columns), None)
+                if rev_col is None:
+                    st.warning(f"欄位名稱異常：{list(df_rev.columns)}")
+                else:
+                    df_rev["revenue_val"] = pd.to_numeric(df_rev[rev_col], errors="coerce")
+                    df_rev = df_rev.dropna(subset=["revenue_val"])
+                    df_rev["mom"] = df_rev["revenue_val"].pct_change(1) * 100
+                    df_rev["yoy"] = df_rev["revenue_val"].pct_change(12) * 100
+                    mom_colors = ["#22C55E" if v >= 0 else "#EF4444" for v in df_rev["mom"].fillna(0)]
+                    fig_rev = go.Figure()
+                    fig_rev.add_trace(go.Bar(x=df_rev["date"], y=df_rev["mom"],
+                                             name="MoM%", marker_color=mom_colors))
+                    fig_rev.add_trace(go.Scatter(x=df_rev["date"], y=df_rev["yoy"],
+                        name="YoY%", mode="lines+markers", line=dict(color="#F97316", width=2)))
+                    fig_rev.add_hline(y=0, line_color="#4B5563", line_width=1)
+                    fig_rev.update_layout(height=280, hovermode="x unified", yaxis_title="%",
+                        legend=dict(orientation="h", y=1.05),
+                        margin=dict(l=40, r=20, t=20, b=20))
+                    st.plotly_chart(fig_rev, use_container_width=True)
+
+        with sub_per:
+            import plotly.graph_objects as go
+            from plotly.subplots import make_subplots as _msp2
+            st.caption("本益比(PER) / 股價淨值比(PBR) / 殖利率，來源：FinMind")
+            fund_start = (pd.Timestamp.today() - pd.DateOffset(years=3)).strftime("%Y-%m-%d")
+            df_fund = _load_per_pbr(stock_id, fund_start)
+            if df_fund is None or df_fund.empty:
+                st.info("⚠️ 無法取得本益比/殖利率資料，請確認 FinMind Token 已設定")
+            else:
+                per_col = next((c for c in ["PER", "per", "price_earnings_ratio"]
+                                if c in df_fund.columns), None)
+                pbr_col = next((c for c in ["PBR", "pbr", "price_book_ratio"]
+                                if c in df_fund.columns), None)
+                div_col = next((c for c in ["dividend_yield", "DividendYield", "yield"]
+                                if c in df_fund.columns), None)
+                if per_col is None and pbr_col is None:
+                    st.warning(f"欄位名稱異常：{list(df_fund.columns)}")
+                else:
+                    latest_fund = df_fund.iloc[-1]
+                    f1, f2, f3 = st.columns(3)
+                    f1.metric("最新 PER", f"{float(latest_fund[per_col]):.1f}x"
+                              if per_col and pd.notna(latest_fund.get(per_col)) else "N/A")
+                    f2.metric("最新 PBR", f"{float(latest_fund[pbr_col]):.2f}x"
+                              if pbr_col and pd.notna(latest_fund.get(pbr_col)) else "N/A")
+                    f3.metric("最新殖利率", f"{float(latest_fund[div_col]):.2f}%"
+                              if div_col and pd.notna(latest_fund.get(div_col)) else "N/A")
+                    fig_fund = _msp2(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
+                                     subplot_titles=("本益比 (PER)", "殖利率 (%)"))
+                    if per_col:
+                        df_fund[per_col] = pd.to_numeric(df_fund[per_col], errors="coerce")
+                        fig_fund.add_trace(go.Scatter(x=df_fund["date"], y=df_fund[per_col],
+                            name="PER", line=dict(color="#3B82F6", width=2)), row=1, col=1)
+                    if div_col:
+                        df_fund[div_col] = pd.to_numeric(df_fund[div_col], errors="coerce")
+                        fig_fund.add_trace(go.Scatter(x=df_fund["date"], y=df_fund[div_col],
+                            name="殖利率", line=dict(color="#22C55E", width=2)), row=2, col=1)
+                    fig_fund.update_layout(height=380, hovermode="x unified",
+                        showlegend=False, margin=dict(l=40, r=20, t=40, b=20))
+                    st.plotly_chart(fig_fund, use_container_width=True)
 
 
 
