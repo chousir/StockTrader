@@ -192,21 +192,45 @@ def main():
     render_global_sidebar(show_stock=False, show_dates=False)
 
     with st.sidebar:
+        # ── 📂 載入 preset（先處理，會 rerun） ──
+        from twquant.data.funnel_presets import save_preset, list_presets, load_preset, delete_preset
+        with st.expander("📂 載入條件 Preset", expanded=False):
+            presets = list_presets()
+            names = [p["name"] for p in presets]
+            chosen = st.selectbox("選擇", ["(不載入)"] + names, key="p03_load_pick")
+            if chosen != "(不載入)" and st.session_state.get("_p03_loaded") != chosen:
+                loaded = load_preset(chosen)
+                if loaded:
+                    for k, v in loaded.items():
+                        st.session_state[f"p03_pst_{k}"] = v
+                    st.session_state["_p03_loaded"] = chosen
+                    st.rerun()
+            if chosen != "(不載入)" and st.button("🗑️ 刪除此 preset", use_container_width=True):
+                delete_preset(chosen)
+                st.session_state.pop("_p03_loaded", None)
+                st.rerun()
+
+        # 取出已載入的 preset 值（若有）
+        _pst = {k.replace("p03_pst_", ""): v for k, v in st.session_state.items()
+                if k.startswith("p03_pst_")}
+
         st.header("🎯 掃描模式")
         scan_mode = st.radio(
             "模式",
             ["🔻 兩階段漏斗（粗篩+精篩）", "📡 純訊號雷達（跳過粗篩）"],
+            index=0 if _pst.get("scan_mode", "漏斗") == "漏斗" else 1,
             label_visibility="collapsed",
         )
         radar_mode = scan_mode.startswith("📡")
 
         st.divider()
         st.header("🔍 選股來源")
-        source = st.radio("來源", ["全市場", "指定產業"], horizontal=True)
+        source = st.radio("來源", ["全市場", "指定產業"], horizontal=True,
+                          index=0 if _pst.get("source", "全市場") == "全市場" else 1)
         sectors = ()
         if source == "指定產業":
             sectors = tuple(st.multiselect("產業（可多選）", list_sectors(),
-                                            default=["半導體業", "電子工業"]))
+                                            default=_pst.get("sectors") or ["半導體業", "電子工業"]))
 
         # 粗篩條件區（雷達模式下隱藏）
         if not radar_mode:
@@ -215,10 +239,14 @@ def main():
             tmpl = st.selectbox("一鍵模板", list(_TEMPLATES.keys()))
             t = _TEMPLATES[tmpl]
             with st.expander("微調條件", expanded=False):
-                rsi_range = st.slider("RSI(14) 區間", 0, 100, (t["rsi_min"], t["rsi_max"]))
-                min_vol = st.slider("最低量比（vol5/vol20）", 0.5, 3.0, t["min_vol"], 0.1)
-                min_ret20 = st.slider("最低 20 日漲幅 %", -10.0, 30.0, t["min_ret20"], 1.0)
-                max_dd = st.slider("距 60 日高點最大跌幅 %", 0.0, 50.0, t["max_dd"], 1.0)
+                rsi_range = st.slider("RSI(14) 區間", 0, 100,
+                                      tuple(_pst.get("rsi_range") or (t["rsi_min"], t["rsi_max"])))
+                min_vol = st.slider("最低量比（vol5/vol20）", 0.5, 3.0,
+                                    float(_pst.get("min_vol", t["min_vol"])), 0.1)
+                min_ret20 = st.slider("最低 20 日漲幅 %", -10.0, 30.0,
+                                      float(_pst.get("min_ret20", t["min_ret20"])), 1.0)
+                max_dd = st.slider("距 60 日高點最大跌幅 %", 0.0, 50.0,
+                                   float(_pst.get("max_dd", t["max_dd"])), 1.0)
             st.caption("固定條件：Close > MA60（趨勢向上）")
         else:
             rsi_range = (0, 100)
@@ -227,16 +255,36 @@ def main():
         st.divider()
         st.header("🎯 階段 2：精篩策略" if not radar_mode else "🎯 策略訊號")
         strat_keys = st.multiselect(
-            "策略（可多選）", _STRAT_KEYS, default=_STRAT_KEYS,
+            "策略（可多選）", _STRAT_KEYS,
+            default=_pst.get("strat_keys") or _STRAT_KEYS,
             format_func=lambda k: _STRAT_LABEL.get(k, k),
         )
-        lookback = st.slider("回看近 N 日內訊號觸發", 1, 10, 5)
-        min_score = st.slider("最低共振分數（命中策略數）", 0, 5, 1)
+        lookback = st.slider("回看近 N 日內訊號觸發", 1, 10,
+                             int(_pst.get("lookback", 5)))
+        min_score = st.slider("最低共振分數（命中策略數）", 0, 5,
+                              int(_pst.get("min_score", 1)))
 
         run_btn = st.button(
             "🚀 執行漏斗" if not radar_mode else "📡 啟動雷達",
             type="primary", use_container_width=True,
         )
+
+        # ── 💾 儲存目前條件為 preset ──
+        st.divider()
+        with st.expander("💾 儲存目前條件"):
+            save_name = st.text_input("preset 名稱", placeholder="如：每日多頭",
+                                       key="p03_save_name")
+            if st.button("💾 儲存", use_container_width=True,
+                         key="p03_save_btn") and save_name:
+                save_preset(save_name, {
+                    "scan_mode": "雷達" if radar_mode else "漏斗",
+                    "source": source, "sectors": list(sectors),
+                    "rsi_range": list(rsi_range), "min_vol": float(min_vol),
+                    "min_ret20": float(min_ret20), "max_dd": float(max_dd),
+                    "strat_keys": list(strat_keys), "lookback": int(lookback),
+                    "min_score": int(min_score),
+                })
+                st.success(f"已儲存：{save_name}")
 
     # 主區標題
     if radar_mode:
