@@ -21,6 +21,12 @@ _POPULAR = ["2330", "2317", "2454", "2308", "0050"]
 _STRAT_LABEL = {"momentum_concentrate": "F動能精選", "volume_breakout": "H量價突破",
                 "triple_ma_twist": "L三線扭轉", "risk_adj_momentum": "MRAM動能", "donchian_breakout": "N唐奇安"}
 
+@st.cache_resource
+def _start_auto_sync():
+    from twquant.data.auto_sync import ensure_running
+    ensure_running(DB_PATH, _POPULAR); return True
+_start_auto_sync()
+
 with st.sidebar:
     st.title("twquant 台股量化")
     from twquant.dashboard.config import get_broker_discount, get_init_cash
