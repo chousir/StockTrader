@@ -144,18 +144,18 @@ make docker-logs
 make docker-down
 ```
 
-`Dockerfile` 為兩階段建置：第一階段用 `rust:1.80-bookworm` 編譯 wheel，第二階段用 `python:3.11-slim-bookworm` 跑 Streamlit。容器內建 cron daemon + entrypoint 自動 seed 流程，**零配置即可長期執行**。
+`Dockerfile` 為兩階段建置：第一階段用 `rust:1.80-bookworm` 編譯 wheel，第二階段用 `python:3.11-slim-bookworm` 跑 Streamlit。容器內建 cron daemon。**Lazy 啟動模式**：不再自動 seed，由 dashboard onboarding 互動式抓取，**首次體驗 30 秒上線**。
 
-### 🚦 啟動行為一覽
+### 🚦 啟動行為一覽（Lazy 模式）
 
 | 場景 | 行為 |
 |------|------|
-| **首次啟動（空 volume）+ 有 `FINMIND_API_TOKEN`** | 自動執行 `seed_data.py --universe` 抓 49 支精選宇宙（約 5-10 分鐘），完成後啟動 Streamlit + cron |
-| **首次啟動（空 volume）+ 無 token** | 跳過 seed，直接啟動 Streamlit；使用者進 onboarding 填 token 後可手動 `docker exec ... seed_data.py` |
-| **重啟容器**（`docker compose restart` / `up -d` 再次） | Volume 保留 → **不重抓** → 直接啟動 |
-| **更新 image 重建**（`up --build`） | Volume 保留 → 不重抓 |
-| **隔一段時間自動回來開** | 容器內 cron 每交易日 14:30 自動執行 `scheduled_sync.py`（增量同步 + 策略掃描 + Discord 推播） |
-| **手動補齊資料** | `docker exec twquant-app python scripts/scheduled_sync.py` |
+| **首次啟動（空 volume）** | 容器只啟動 Streamlit + cron，不抓資料 → 開啟 http://localhost:8501 → onboarding 4 步驟（含 token 驗證 + 範圍選擇 + 起始日）→ 點「🚀 開始抓取」啟動背景任務 |
+| **重啟容器** | Volume 保留 → 直接啟動，sidebar 同步 widget 顯示 DB 狀態 |
+| **背景自動補齊** | `auto_sync.py` 每 5 分鐘（盤中）/ 60 分鐘（盤後）跑 Phase A（補 HWM）+ Phase B（擴宇宙），漸進把全市場 3000+ 支補滿 |
+| **手動補抓** | 開「頁 01 市場總覽」→ 「📡 資料中心」expander → 選範圍 + 起始日 → 「▶ 開始補抓」（背景執行，不擋手） |
+| **每日盤後** | 容器內 cron 14:30 跑 `scheduled_sync.py`（策略掃描 + 告警 + Discord 推播） |
+| **看抓取進度** | 全頁 sidebar 底部 widget；頁 01 頂部詳細面板（含進度條 + 取消按鈕 + 最近 10 次任務） |
 
 ### 📦 資料持久化（Volume）
 
@@ -188,7 +188,6 @@ FINMIND_API_TOKEN=your_token_here
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/xxx/yyy
 
 # 行為旗標（保留預設即可）
-AUTO_SEED=true       # 首次啟動偵測空 DB 時自動 seed_data.py --universe
 ENABLE_CRON=true     # 啟動 cron daemon（每交易日 14:30 自動同步+掃描+推播）
 ```
 
@@ -202,9 +201,8 @@ docker compose up -d
 
 | 變數 | 預設值 | 說明 |
 |------|--------|------|
-| `FINMIND_API_TOKEN` | 空 | FinMind API Token；空值跳過自動 seed |
+| `FINMIND_API_TOKEN` | 空 | FinMind API Token；空值仍可用匿名額度（較低，建議註冊） |
 | `DISCORD_WEBHOOK_URL` | 空 | Discord Webhook；空值不推播 |
-| `AUTO_SEED` | `true` | 首次啟動自動 seed。CI / 測試可設為 `false` |
 | `ENABLE_CRON` | `true` | 容器內建 cron 排程。不想用設為 `false`，改自己用宿主機 cron |
 | `ARCTICDB_URI` | `lmdb:///app/data/arcticdb` | ArcticDB 連線字串 |
 | `TZ` | `Asia/Taipei` | 時區（影響 cron 觸發時間） |
