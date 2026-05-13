@@ -166,6 +166,21 @@ def main():
 
     with st.sidebar:
         st.divider()
+        with st.expander("📂 依產業選股"):
+            from twquant.data.universe import list_sectors, list_by_sector_db
+            sec = st.selectbox("產業", list_sectors(), key="p02_sec_pick")
+            options = [(s, n) for s, n in list_by_sector_db(sec)]
+            if options:
+                idx = st.selectbox(
+                    "股票", range(len(options)),
+                    format_func=lambda i: f"{options[i][0]} {options[i][1]}",
+                    key="p02_sec_stock",
+                )
+                if st.button("套用此股票", use_container_width=True, key="p02_apply_sec"):
+                    chosen = options[idx][0]
+                    st.session_state["g_current_stock"] = chosen
+                    st.session_state["current_stock"] = chosen
+                    st.rerun()
         st.caption("📌 關注清單")
 
     # ── Layer 1：全局導覽（搜尋 + 關注清單快捷 + 狀態） ──
