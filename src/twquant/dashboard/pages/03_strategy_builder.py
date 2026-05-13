@@ -36,21 +36,28 @@ _TEMPLATES = {
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def _get_universe(source: str, sectors: tuple[str, ...]) -> list[str]:
-    """依來源回傳股票代號清單"""
+def _get_universe(source: str, sectors: tuple[str, ...],
+                  exclude_etf: bool = True) -> list[str]:
+    """依來源回傳股票代號清單；預設排除 ETF/ETN/權證，只留 4 碼純數字個股 (1xxx-9xxx)"""
+    import re
     from twquant.data.storage import SQLiteStorage
     from twquant.data.universe import list_by_sector_db
 
     if source == "全市場":
         syms = SQLiteStorage(DB_PATH).list_symbols()
-        return sorted({s.replace("daily_price/", "") for s in syms if s.startswith("daily_price/")})
+        sids = {s.replace("daily_price/", "") for s in syms if s.startswith("daily_price/")}
     elif source == "指定產業" and sectors:
-        result: set[str] = set()
+        sids = set()
         for sec in sectors:
             for sid, _ in list_by_sector_db(sec):
-                result.add(sid)
-        return sorted(result)
-    return []
+                sids.add(sid)
+    else:
+        return []
+
+    if exclude_etf:
+        # 只留 4 碼純數字、首位 1-9 的個股（排除 ETF 00xx、ETN 02xx、權證 01xx 等）
+        sids = {s for s in sids if re.match(r"^[1-9]\d{3}$", s)}
+    return sorted(sids)
 
 
 def _compute_features(df) -> dict:
@@ -231,6 +238,11 @@ def main():
         if source == "指定產業":
             sectors = tuple(st.multiselect("產業（可多選）", list_sectors(),
                                             default=_pst.get("sectors") or ["半導體業", "電子工業"]))
+        exclude_etf = st.checkbox(
+            "☑️ 只看個股（排除 ETF / ETN / 權證）",
+            value=bool(_pst.get("exclude_etf", True)),
+            help="預設只看 4 碼純數字個股（1xxx-9xxx）；取消則納入 ETF/ETN/權證",
+        )
 
         # 粗篩條件區（雷達模式下隱藏）
         if not radar_mode:
@@ -279,6 +291,7 @@ def main():
                 save_preset(save_name, {
                     "scan_mode": "雷達" if radar_mode else "漏斗",
                     "source": source, "sectors": list(sectors),
+                    "exclude_etf": bool(exclude_etf),
                     "rsi_range": list(rsi_range), "min_vol": float(min_vol),
                     "min_ret20": float(min_ret20), "max_dd": float(max_dd),
                     "strat_keys": list(strat_keys), "lookback": int(lookback),
@@ -317,7 +330,7 @@ def main():
         return
 
     with st.spinner("掃描中…全市場約 30–60 秒、單一產業約 5–10 秒"):
-        sids = _get_universe(source, sectors)
+        sids = _get_universe(source, sectors, exclude_etf=exclude_etf)
         if not sids:
             st.warning("無股票符合來源條件")
             return
