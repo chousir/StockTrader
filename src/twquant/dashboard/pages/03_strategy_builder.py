@@ -224,9 +224,10 @@ def main():
         st.header("🎯 掃描模式")
         scan_mode = st.radio(
             "模式",
-            ["🔻 兩階段漏斗（粗篩+精篩）", "📡 純訊號雷達（跳過粗篩）"],
+            ["🔻 精選候選股（先過濾再看訊號）", "📡 全部訊號（不過濾，看所有命中）"],
             index=0 if _pst.get("scan_mode", "漏斗") == "漏斗" else 1,
             label_visibility="collapsed",
+            help="精選：粗篩 4 條件 → 5 策略；全部訊號：直接跑 5 策略，不過濾",
         )
         radar_mode = scan_mode.startswith("📡")
 
@@ -277,7 +278,7 @@ def main():
                               int(_pst.get("min_score", 1)))
 
         run_btn = st.button(
-            "🚀 執行漏斗" if not radar_mode else "📡 啟動雷達",
+            "🚀 開始掃描",
             type="primary", use_container_width=True,
         )
 
@@ -301,27 +302,32 @@ def main():
 
     # 主區標題
     if radar_mode:
-        st.title("📡 純訊號雷達")
-        st.caption("跳過粗篩，直接掃描指定股池近 N 日的 5 策略訊號｜快取 15 分鐘")
+        st.title("📡 全部訊號掃描")
+        st.caption("直接掃描指定股池近 N 日的 5 策略訊號（不過濾），看所有命中｜快取 15 分鐘")
     else:
-        st.title("🔻 兩階段選股漏斗")
-        st.caption("全市場 / 產業 → 粗篩（4 條件）→ 5 策略精篩 → 候選清單｜快取 15 分鐘")
+        st.title("🔻 精選候選股")
+        st.caption("全市場 / 產業 → 粗篩（4 條件過濾）→ 5 策略精篩 → 候選清單｜快取 15 分鐘")
 
     if not run_btn:
-        st.info("在左側設定條件後，點擊「🚀 執行漏斗」開始兩階段選股。")
-        with st.expander("📖 漏斗邏輯說明", expanded=True):
+        st.info("在左側設定條件後，點擊「🚀 開始掃描」")
+        with st.expander("📖 兩種模式說明", expanded=True):
             st.markdown("""
-**階段 1（粗篩）— 4 個技術門檻過濾全市場**
-- Close > MA60（趨勢向上，固定）
-- 量比 ≥ 設定值（量未萎縮）
-- RSI 在區間內（避超賣 / 超買陷阱）
-- 20 日漲幅 ≥ 設定值（動能存在）
-- 距 60 日高點跌幅 ≤ 設定值（不買破底股）
+**🔻 精選候選股（先過濾再看訊號）— 推薦**
+- 第一步用 4 個技術門檻過濾掉爛標的：
+  - Close > MA60（趨勢向上）
+  - 量比 ≥ 設定值（量未萎縮）
+  - RSI 在區間內（避超賣 / 超買陷阱）
+  - 20 日漲幅 ≥ 設定值（動能存在）
+  - 距 60 日高點跌幅 ≤ 設定值（不買破底股）
+- 第二步對倖存股跑 5 策略，輸出命中標籤（如 F+H+L）
 
-**階段 2（精篩）— 5 大策略命中數 ≥ 共振分數**
-- F｜動能精選、H｜量價突破、L｜三線扭轉、M｜RAM 動能、N｜唐奇安突破
-- 同股可命中多策略，分數 = 命中策略數
-- **共振分 ≥ 2 視為強訊號，≥ 3 視為高品質**
+**📡 全部訊號（不過濾，看所有命中）**
+- 跳過粗篩，直接對所有股票跑 5 策略
+- 適合：想看「今天哪些股觸發訊號」全景，不在意品質
+- 通常結果較雜，需自己挑
+
+**策略：** F｜動能精選 / H｜量價突破 / L｜三線扭轉 / M｜RAM 動能 / N｜唐奇安突破
+**共振分 ≥ 2 視為強訊號，≥ 3 視為高品質**
 """)
         return
 
@@ -348,12 +354,12 @@ def main():
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("📥 來源", f"{n_source} 支")
     if radar_mode:
-        c2.metric("📡 雷達掃描", f"{n_stage1} 支", "略過粗篩", delta_color="off")
+        c2.metric("📡 全部掃描", f"{n_stage1} 支", "不過濾", delta_color="off")
     else:
-        c2.metric("📊 階段 1 通過", f"{n_stage1} 支",
+        c2.metric("📊 粗篩通過", f"{n_stage1} 支",
                   delta=f"{n_stage1-n_source}" if n_source else None,
                   delta_color="off")
-    c3.metric("🎯 訊號觸發" if radar_mode else "🎯 階段 2 通過", f"{n_stage2} 支",
+    c3.metric("🎯 訊號觸發" if radar_mode else "🎯 精篩通過", f"{n_stage2} 支",
               delta=f"{n_stage2-n_stage1}" if n_stage1 else None,
               delta_color="off")
     c4.metric("⚡ 共振 ≥ 2", f"{n_resonance} 支")
