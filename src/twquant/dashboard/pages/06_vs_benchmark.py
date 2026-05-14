@@ -413,7 +413,9 @@ def main():
             use_adj = st.checkbox("✅ 使用還原權息", value=False)
             run_btn = st.button("▶ 執行單策略回測", type="primary", use_container_width=True)
         else:  # 全宇宙
-            source = st.radio("股票來源", ["產業板塊", "全宇宙", "自訂清單"], horizontal=True)
+            source = st.radio("掃描範圍", ["全宇宙", "產業板塊", "自訂清單"],
+                              horizontal=True, index=0,
+                              help="全宇宙約 3000+ 支，1-3 分鐘；產業板塊 50-200 支較快")
             sectors = ()
             custom_list = ""
             if source == "產業板塊":
