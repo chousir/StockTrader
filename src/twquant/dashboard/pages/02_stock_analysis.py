@@ -196,7 +196,7 @@ def main():
     from twquant.dashboard.components.kline_chart import create_tw_stock_chart
     from twquant.dashboard.components.smart_search import render_smart_search
     from twquant.dashboard.components.watchlist_ui import (
-        render_watchlist_chips,
+        render_watchlist_panel,
         render_watchlist_button,
     )
     from twquant.dashboard.components.tradingview_widgets import render_tv_technicals
@@ -224,14 +224,11 @@ def main():
                     st.session_state["g_current_stock"] = chosen
                     st.session_state["current_stock"] = chosen
                     st.rerun()
-        st.caption("📌 關注清單")
 
-    # ── Layer 1：全局導覽（搜尋 + 關注清單快捷 + 狀態） ──
-    col_search, col_chips, col_status = st.columns([4, 4, 1])
+    # ── Layer 1：全局導覽（搜尋 + 狀態） ──
+    col_search, col_status = st.columns([8, 1])
     with col_search:
         searched_id = render_smart_search(key="stock_analysis_search")
-    with col_chips:
-        render_watchlist_chips()
     with col_status:
         st.caption("🟢 資料正常")
 
@@ -242,8 +239,8 @@ def main():
         or "2330"
     )
 
-    with st.sidebar:
-        render_watchlist_button(stock_id)
+    # ── 自選股管理面板（頂部） ──
+    render_watchlist_panel()
 
     st.divider()
 
@@ -266,7 +263,7 @@ def main():
     chg_color = "#EF4444" if chg > 0 else ("#22C55E" if chg < 0 else "#9CA3AF")
     arrow = "▲" if chg > 0 else ("▼" if chg < 0 else "─")
 
-    title_col, btn_col, bsk_col = st.columns([5, 1, 1])
+    title_col, wl_col, bsk_col, btn_col = st.columns([4, 1, 1, 1])
     with title_col:
         st.markdown(
             f"### {stock_id} &nbsp; "
@@ -275,18 +272,21 @@ def main():
             unsafe_allow_html=True,
         )
         st.caption(f"最後更新：{latest['date']} | {len(df)} 個交易日")
+    with wl_col:
+        render_watchlist_button(stock_id)
+    with bsk_col:
+        from twquant.data.basket import add_to_basket, get_basket
+        in_basket = stock_id in get_basket()
+        if st.button("🛒 加入籃子" if not in_basket else "✓ 已在籃子",
+                     use_container_width=True, disabled=in_basket,
+                     help="加入本次操作暫存籃，關閉視窗即清空"):
+            add_to_basket(stock_id)
+            st.rerun()
     with btn_col:
         if st.button("⚡ 快速回測", use_container_width=True, type="primary",
                      help="帶入當前股票跳到策略建構器"):
             st.session_state.update({"g_current_stock": stock_id, "current_stock": stock_id})
             st.switch_page("pages/03_strategy_builder.py")
-    with bsk_col:
-        from twquant.data.basket import add_to_basket, get_basket
-        in_basket = stock_id in get_basket()
-        if st.button("🛒 加入籃子" if not in_basket else "✓ 已在籃子",
-                     use_container_width=True, disabled=in_basket):
-            add_to_basket(stock_id)
-            st.rerun()
 
     with st.expander("📋 今日詳情"):
         e1, e2, e3, e4 = st.columns(4)

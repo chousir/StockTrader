@@ -368,13 +368,19 @@ def main():
     # ── 模式選擇（最頂） ──
     g_sel_strat = st.session_state.get("g_selected_strategy")
     default_mode_idx = 1 if g_sel_strat in _STRAT_KEYS else 0
+    _MODE_OPTS = ["5 策略並排對照", "🎯 單策略快測", "🌐 全宇宙策略掃描"]
+    # 自選股面板帶入的掃描清單 → 預先 seed 全宇宙/自訂清單模式
+    _incoming = st.session_state.pop("g_scan_custom_list", None)
+    if _incoming:
+        st.session_state["p06_mode_sel"] = "🌐 全宇宙策略掃描"
+        st.session_state["p06_scan_source"] = "自訂清單"
+        st.session_state["p06_custom_list"] = "\n".join(_incoming)
+    st.session_state.setdefault("p06_mode_sel", _MODE_OPTS[default_mode_idx])
     with st.sidebar:
         st.header("🎯 模式")
         mode = st.radio(
-            "選擇模式",
-            ["5 策略並排對照", "🎯 單策略快測", "🌐 全宇宙策略掃描"],
-            index=default_mode_idx,
-            label_visibility="collapsed",
+            "選擇模式", _MODE_OPTS,
+            label_visibility="collapsed", key="p06_mode_sel",
         )
 
     needs_stock = mode != "🌐 全宇宙策略掃描"
@@ -413,8 +419,9 @@ def main():
             use_adj = st.checkbox("✅ 使用還原權息", value=False)
             run_btn = st.button("▶ 執行單策略回測", type="primary", use_container_width=True)
         else:  # 全宇宙
+            st.session_state.setdefault("p06_scan_source", "全宇宙")
             source = st.radio("掃描範圍", ["全宇宙", "產業板塊", "自訂清單"],
-                              horizontal=True, index=0,
+                              horizontal=True, key="p06_scan_source",
                               help="全宇宙約 3000+ 支，1-3 分鐘；產業板塊 50-200 支較快")
             sectors = ()
             custom_list = ""
@@ -422,7 +429,8 @@ def main():
                 sectors = tuple(st.multiselect("產業（可多選）", list_sectors(),
                                                 default=["半導體業", "電子工業"]))
             elif source == "自訂清單":
-                custom_list = st.text_area("代號清單", value="2330\n2317\n2454\n0050", height=120)
+                st.session_state.setdefault("p06_custom_list", "2330\n2317\n2454\n0050")
+                custom_list = st.text_area("代號清單", height=120, key="p06_custom_list")
             strats = st.multiselect("策略", _STRAT_KEYS, default=_STRAT_KEYS,
                                     format_func=lambda k: _STRAT_LABEL.get(k, k))
             min_trades = st.number_input("最少交易次數", 1, 20, 3)
