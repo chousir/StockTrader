@@ -94,8 +94,10 @@ def render_global_sidebar(
             else:
                 info = last_sync_info("data/twquant.db")
                 mh_icon = "🟢" if info["thread_alive"] else "⚪"
+                sync_label = (f"定時 {info['nightly_time']}"
+                              if info["auto_sync_enabled"] else "已停用")
                 st.caption(f"{mh_icon} 同步：{info['up_to_date']}/{info['total']} 最新"
-                           + ("（盤中）" if info["is_market_hours"] else ""))
+                           + f"（{sync_label}）")
         except Exception:
             pass
 

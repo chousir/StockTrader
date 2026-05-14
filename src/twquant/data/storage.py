@@ -115,10 +115,23 @@ class SQLiteStorage(DataStorage):
         return f"data_{symbol.replace('/', '_').replace('-', '_')}"
 
     def upsert(self, symbol: str, df: pd.DataFrame, date_column: str = "date") -> None:
+        if df is None or df.empty:
+            return
         df = df.copy()
         df[date_column] = df[date_column].astype(str)
         table = self._table(symbol)
-        df.to_sql(table, self._conn, if_exists="replace", index=False)
+        min_date = df[date_column].min()
+        max_date = df[date_column].max()
+        try:
+            # 刪除重疊日期範圍後 append，保留範圍外的歷史資料
+            self._conn.execute(
+                f"DELETE FROM {table} WHERE {date_column} >= ? AND {date_column} <= ?",
+                (min_date, max_date),
+            )
+            df.to_sql(table, self._conn, if_exists="append", index=False)
+        except Exception:
+            # 表不存在 → 直接建立
+            df.to_sql(table, self._conn, if_exists="replace", index=False)
         self._conn.execute(
             "INSERT OR IGNORE INTO _symbols VALUES (?)", (symbol,)
         )

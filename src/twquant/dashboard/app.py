@@ -24,7 +24,7 @@ _STRAT_LABEL = {"momentum_concentrate": "F動能精選", "volume_breakout": "H�
 @st.cache_resource
 def _start_auto_sync():
     from twquant.data.auto_sync import ensure_running
-    ensure_running(DB_PATH, _POPULAR); return True
+    ensure_running(DB_PATH); return True
 _start_auto_sync()
 
 with st.sidebar:

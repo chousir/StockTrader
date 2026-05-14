@@ -193,6 +193,13 @@ def upsert_universe(db_path: str = DB_PATH) -> int:
     from FinMind.data import DataLoader
     init_universe_table(db_path)
     dl = DataLoader()
+    try:
+        from twquant.dashboard.config import get_finmind_token
+        token = get_finmind_token()
+        if token:
+            dl.login_by_token(api_token=token)
+    except Exception:
+        pass
     raw = dl.taiwan_stock_info()
     if raw.empty:
         return 0

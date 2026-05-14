@@ -12,6 +12,20 @@ DB_PATH = "data/twquant.db"
 from twquant.dashboard.components.tradingview_widgets import render_tv_ticker_tape
 
 
+@st.cache_data(ttl=3600)
+def _list_universe_sids_cached() -> list[str]:
+    import sqlite3
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        rows = conn.execute(
+            "SELECT stock_id FROM _universe WHERE stock_id GLOB '[0-9]*' ORDER BY stock_id"
+        ).fetchall()
+        conn.close()
+        return [r[0] for r in rows]
+    except Exception:
+        return []
+
+
 @st.cache_data(ttl=1800)
 def _load_latest(sids: tuple, days_back: int = 7):
     import pandas as pd
@@ -64,91 +78,136 @@ def _sector_performance(months: int = 3):
 
 
 def _render_data_center():
-    """頁 01 頂部「📡 資料中心」expander：同步狀態 + DB 狀態 + 手動補抓"""
+    """頁 01 頂部「📡 同步中心」expander：排程設定 + 進度 + 手動補抓 + 補齊全部"""
     import pandas as pd
-    from twquant.data.storage import SQLiteStorage
+    import sqlite3
     from twquant.data.sync_jobs import latest_running_job, recent_jobs, cancel_running_jobs
-    from twquant.data.auto_sync import last_sync_info, run_manual_job
+    from twquant.data.auto_sync import last_sync_info, run_manual_job, run_catchup_job
     from twquant.data.universe import list_sectors, list_by_sector_db
     from twquant.dashboard.config import get_finmind_token
-    import sqlite3
+    from twquant.data import sync_config
 
     job = latest_running_job(DB_PATH)
     info = last_sync_info(DB_PATH)
     has_job = job is not None
 
-    header = (f"📡 資料中心 — {'🟡 抓取中 ' + str(job['done']) + '/' + str(job['total']) if has_job else '🟢 就緒'}  ｜  "
-              f"入庫 {info['total']} 支｜近 3 日最新 {info['up_to_date']} 支")
+    header = (f"📡 同步中心 — "
+              f"{'🟡 抓取中 ' + str(job['done']) + '/' + str(job['total']) if has_job else '🟢 就緒'}"
+              f"  ｜  入庫 {info['total']} 支｜近 3 日最新 {info['up_to_date']} 支")
     with st.expander(header, expanded=has_job):
-        # 當前任務
+
+        # ── 進度條 ──
         if has_job:
             pct = job["done"] / max(job["total"], 1)
-            st.progress(pct, text=f"目前抓取：{job.get('current_sid') or '初始化...'}  "
-                                  f"({job['done']}/{job['total']}，失敗 {job['failed']})")
-            st.caption(f"任務類型：**{job['job_type']}** ｜ 範圍：{job.get('scope_desc','')}  "
-                       f"｜ 開始時間：{job.get('started_at','')}")
-            if st.button("⏹ 取消所有 running 任務", key="dc_cancel"):
+            type_label = {"nightly": "🌙夜間", "manual": "🔄手動",
+                          "catchup": "🔁補齊", "onboarding": "🎯首抓"}.get(
+                job["job_type"], job["job_type"])
+            st.progress(pct, text=f"{type_label}：{job.get('current_sid') or '初始化...'}"
+                                  f"  ({job['done']}/{job['total']}，失敗 {job['failed']})")
+            st.caption(f"範圍：{job.get('scope_desc','')}  ｜  開始：{job.get('started_at','')[:16]}")
+            if st.button("⏹ 取消任務", key="dc_cancel"):
                 n = cancel_running_jobs(DB_PATH)
-                st.success(f"已取消 {n} 個任務（背景 thread 會在當前股票完成後退出）")
+                st.success(f"已取消 {n} 個任務")
                 st.rerun()
         else:
-            st.caption(f"背景 thread：{'🟢 運行中' if info['thread_alive'] else '⚪ 停用'}"
-                       + ("（盤中 5 分鐘/輪）" if info["is_market_hours"] else "（盤後 60 分鐘/輪）"))
+            st.caption(f"排程執行緒：{'🟢 運行中' if info['thread_alive'] else '⚪ 未啟動'}")
 
-        # DB 狀態
         st.divider()
+
+        # ── 自動同步設定 ──
+        st.markdown("**⚙️ 自動同步排程**")
+        cfg = sync_config.load()
+        col_tog, col_time, col_scan = st.columns([1, 1, 1])
+
+        with col_tog:
+            enabled = st.toggle("每日自動同步", value=cfg["auto_sync_enabled"], key="dc_enabled")
+        with col_time:
+            h_now, m_now = sync_config.get_nightly_time()
+            nightly_h = st.number_input("盤後時間（時）", 0, 23, h_now, key="dc_hour")
+            nightly_m = st.number_input("分", 0, 59, m_now, step=5, key="dc_min",
+                                        label_visibility="collapsed")
+        with col_scan:
+            run_scan = st.toggle("同步後跑選股/告警", value=cfg["run_scan_after_sync"],
+                                 key="dc_scan")
+
+        if st.button("💾 儲存排程設定", key="dc_save_cfg"):
+            sync_config.save({
+                **cfg,
+                "auto_sync_enabled": enabled,
+                "nightly_time": f"{int(nightly_h):02d}:{int(nightly_m):02d}",
+                "run_scan_after_sync": run_scan,
+            })
+            st.success(f"已儲存 — 每日 {int(nightly_h):02d}:{int(nightly_m):02d} 自動增量同步"
+                       f"{'（含選股/告警）' if run_scan else ''}")
+            st.rerun()
+
+        st.caption(f"目前設定：{'✅ 啟用' if cfg['auto_sync_enabled'] else '⏸ 停用'}"
+                   f"  每日 {info['nightly_time']}  ｜  歷史起始日 {cfg['history_start']}")
+
+        st.divider()
+
+        # ── DB 快報 ──
         c1, c2, c3 = st.columns(3)
         c1.metric("已入庫", f"{info['total']} 支")
         c2.metric("近 3 日最新", f"{info['up_to_date']} 支")
         c3.metric("Token", "✅ 已設定" if get_finmind_token() else "⚠️ 匿名")
 
-        # 手動補抓
         st.divider()
-        st.markdown("**🔄 手動補抓**")
-        col_src, col_date = st.columns([2, 1])
-        with col_src:
-            src = st.radio("範圍", ["全市場", "自訂板塊"], horizontal=True, key="dc_src")
-            sectors_pick = []
-            if src == "自訂板塊":
-                sectors_pick = st.multiselect("板塊（多選）", list_sectors(),
-                                              default=["半導體業", "電子工業"], key="dc_secs")
-        with col_date:
-            start_date = st.date_input("起始日", value=pd.Timestamp("2020-01-01"),
-                                        min_value=pd.Timestamp("2000-01-01"), key="dc_start")
 
-        # 預覽
-        if src == "全市場":
-            try:
-                conn = sqlite3.connect(DB_PATH)
-                rows = conn.execute(
-                    "SELECT stock_id FROM _universe WHERE stock_id GLOB '[0-9]*'"
-                ).fetchall()
-                conn.close()
-                target = sorted({r[0] for r in rows})
+        # ── 補齊全部 / 手動補抓 並排 ──
+        tab_catchup, tab_manual = st.tabs(["🔁 補齊全部到今日", "🔄 自訂範圍補抓"])
+
+        with tab_catchup:
+            universe_cnt = len(_list_universe_sids_cached())
+            st.caption(
+                f"把 _universe 表中全部 **{universe_cnt} 支**股票從各自 HWM 補到今天。"
+                "適合長時間離線後快速追上。近 3 日內已最新的會自動跳過。"
+            )
+            if st.button("🔁 開始補齊全部", type="primary", key="dc_catchup"):
+                if universe_cnt == 0:
+                    st.error("_universe 表為空，請先確認 FinMind token 並重啟 app（自動填表）")
+                else:
+                    jid = run_catchup_job(DB_PATH)
+                    st.success(f"已啟動補齊任務 #{jid} — 進度顯示於上方與 sidebar")
+                    st.rerun()
+
+        with tab_manual:
+            col_src, col_date = st.columns([2, 1])
+            with col_src:
+                src = st.radio("範圍", ["全市場", "自訂板塊"], horizontal=True, key="dc_src")
+                sectors_pick = []
+                if src == "自訂板塊":
+                    avail = list_sectors()
+                    default_secs = [s for s in ["半導體業", "電子工業"] if s in avail]
+                    sectors_pick = st.multiselect("板塊（多選）", avail,
+                                                  default=default_secs, key="dc_secs")
+            with col_date:
+                start_date = st.date_input(
+                    "起始日", value=pd.Timestamp(sync_config.get_history_start()),
+                    min_value=pd.Timestamp("2000-01-01"), key="dc_start")
+
+            if src == "全市場":
+                target = _list_universe_sids_cached()
                 scope_desc = f"全市場 {len(target)} 支"
-            except Exception:
-                target = []; scope_desc = "全市場 (_universe 表為空)"
-        else:
-            seen, target = set(), []
-            for sec in sectors_pick:
-                for sid, _ in list_by_sector_db(sec):
-                    if sid not in seen:
-                        seen.add(sid); target.append(sid)
-            scope_desc = f"板塊：{'+'.join(sectors_pick[:3])} ({len(target)} 支)"
-
-        st.caption(f"📋 預計：**{len(target)} 支**｜{scope_desc}  "
-                   f"｜ 已在 DB 近 3 日內最新的會自動跳過")
-
-        if st.button("▶ 開始補抓", type="primary", key="dc_start_btn"):
-            if not target:
-                st.error("目標清單為空")
             else:
-                job_id = run_manual_job(DB_PATH, target, str(start_date),
-                                         scope_desc=scope_desc, job_type="manual")
-                st.success(f"已啟動任務 #{job_id} — 進度將顯示於上方與 sidebar")
-                st.rerun()
+                seen, target = set(), []
+                for sec in sectors_pick:
+                    for sid, _ in list_by_sector_db(sec):
+                        if sid not in seen:
+                            seen.add(sid); target.append(sid)
+                scope_desc = f"板塊：{'+'.join(sectors_pick[:3])} ({len(target)} 支)"
 
-        # 最近任務
+            st.caption(f"📋 預計：**{len(target)} 支**  ｜ 已最新的自動跳過")
+            if st.button("▶ 開始補抓", type="primary", key="dc_start_btn"):
+                if not target:
+                    st.error("目標清單為空")
+                else:
+                    jid = run_manual_job(DB_PATH, target, str(start_date),
+                                         scope_desc=scope_desc, job_type="manual")
+                    st.success(f"已啟動任務 #{jid} — 進度顯示於上方與 sidebar")
+                    st.rerun()
+
+        # ── 最近任務 ──
         st.divider()
         st.markdown("**📋 最近 10 次任務**")
         recent = recent_jobs(10, DB_PATH)
@@ -156,9 +215,8 @@ def _render_data_center():
             df_r = pd.DataFrame(recent)
             df_r["進度"] = df_r.apply(lambda r: f"{r['done']}/{r['total']}", axis=1)
             df_r["時間"] = df_r["started_at"].str[:16]
-            show_cols = ["時間", "job_type", "status", "scope_desc", "進度"]
             df_r = df_r.rename(columns={"job_type": "類型", "status": "狀態",
-                                         "scope_desc": "範圍"})
+                                        "scope_desc": "範圍"})
             st.dataframe(df_r[["時間", "類型", "狀態", "範圍", "進度"]],
                          use_container_width=True, hide_index=True, height=200)
         else:

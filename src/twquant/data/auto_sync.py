@@ -1,10 +1,13 @@
-"""智能背景自動同步：盤中 5 分鐘 / 盤後 60 分鐘
+"""背景同步排程：每個交易日晚上自動增量同步 + 每日掃描
 
-每輪兩階段：
-  Phase A（補新）：DB 內已入庫股票，從 HWM 增量補到 today
-  Phase B（擴宇宙）：宇宙中尚未入庫的股票，每輪挑 N 支補抓 2015-01-01 起
+架構：
+  - 一個長駐執行緒每分鐘檢查是否到達 nightly_time，到了就執行 _run_nightly()
+  - _run_nightly()：增量同步已入庫股票 → 每日選股 → 告警評估（全同步阻塞，不重疊）
+  - run_manual_job()：UI 觸發（onboarding / 手動補抓），回傳 job_id 供進度條用
+  - run_catchup_job()：補齊全部 _universe 股票到今日（長時間離線後使用）
+  - _JOB_LOCK 確保同一時間只有一個同步 job 在跑
 
-進度寫入 _sync_jobs 表，UI 可即時讀取。
+移除：盤中抓取（FinMind 日K盤中無當天資料，徒耗 API 額度）
 """
 
 import threading
@@ -19,32 +22,25 @@ from twquant.data.sync_jobs import (
 
 _thread: threading.Thread | None = None
 _lock = threading.Lock()
+_JOB_LOCK = threading.Lock()
 
-# 速率參數（盤中 batch=10，每秒約 3 req → 1 小時 1080 req，FinMind 限 600/h 故 sleep 拉到 0.3s）
-_BATCH_MARKET_HOURS = 10
-_BATCH_OFF_HOURS = 50
-_INTERVAL_MARKET = 300
-_INTERVAL_OFF = 3600
-_SLEEP_PER_REQ = 0.3
+_SLEEP_PER_REQ = 0.3  # FinMind 限速保護（provider 本身有 600/hr limiter，此為額外緩衝）
 
 
-def _is_market_hours() -> bool:
-    tst = datetime.now(timezone(timedelta(hours=8)))
-    if tst.weekday() >= 5:
-        return False
-    h, m = tst.hour, tst.minute
-    return (9, 0) <= (h, m) <= (13, 30)
+# ─── 工具 ──────────────────────────────────────────────────────────────────
+
+def _is_trading_day() -> bool:
+    """週一至週五視為交易日（不排除台灣國定假日）"""
+    return datetime.now(timezone(timedelta(hours=8))).weekday() < 5
 
 
 def _list_in_db_sids(db_path: str) -> list[str]:
     from twquant.data.storage import SQLiteStorage
-    storage = SQLiteStorage(db_path)
-    syms = storage.list_symbols()
+    syms = SQLiteStorage(db_path).list_symbols()
     return [s.replace("daily_price/", "") for s in syms if s.startswith("daily_price/")]
 
 
 def _list_universe_sids(db_path: str) -> list[str]:
-    """從 _universe 表撈所有股票（含 ETF），按代號排序"""
     import sqlite3
     try:
         conn = sqlite3.connect(db_path)
@@ -57,8 +53,22 @@ def _list_universe_sids(db_path: str) -> list[str]:
         return []
 
 
+def _ensure_universe(db_path: str) -> None:
+    """懶載 _universe 表（7 天刷新一次，失敗不影響啟動）"""
+    from twquant.data import sync_config
+    if not sync_config.universe_needs_refresh():
+        return
+    try:
+        from twquant.data.universe import upsert_universe
+        n = upsert_universe(db_path)
+        if n > 0:
+            sync_config.mark_universe_updated()
+            logger.info(f"[auto_sync] _universe 已更新 {n} 筆")
+    except Exception as e:
+        logger.debug(f"[auto_sync] _universe 更新失敗（非致命）: {e}")
+
+
 def _sync_one(sid: str, storage, provider, checker, start: str, end: str) -> bool:
-    """抓一支股票 [start, end]，回傳成功與否"""
     try:
         df = provider.fetch_daily(sid, start, end)
         result = checker.run_all_checks(df, sid)
@@ -70,97 +80,118 @@ def _sync_one(sid: str, storage, provider, checker, start: str, end: str) -> boo
     return False
 
 
-def _sync_once(db_path: str, default_universe: list[str]) -> None:
-    """執行一輪 Phase A + Phase B"""
+# ─── 夜間排程任務（阻塞，在獨立 thread 執行） ─────────────────────────────
+
+def _run_nightly(db_path: str) -> None:
     from twquant.data.storage import SQLiteStorage
     from twquant.data.providers.finmind import FinMindProvider
     from twquant.data.sanity import TWSEDataSanityChecker
     from twquant.dashboard.config import get_finmind_token
+    from twquant.data import sync_config
+
+    in_db = _list_in_db_sids(db_path)
+    if not in_db:
+        logger.info("[auto_sync] DB 無資料，略過夜間同步")
+        return
+
+    history_start = sync_config.get_history_start()
+    today = date.today().isoformat()
+    scope = f"夜間增量 {len(in_db)} 支"
+    job_id = create_job("nightly", scope, history_start, len(in_db), db_path)
+
+    if not _JOB_LOCK.acquire(blocking=True, timeout=30):
+        finish_job(job_id, "failed", error_msg="另一個同步任務佔用鎖", db_path=db_path)
+        return
 
     storage = SQLiteStorage(db_path)
     provider = FinMindProvider(token=get_finmind_token() or "")
     checker = TWSEDataSanityChecker()
-    today = date.today().isoformat()
-
-    in_market = _is_market_hours()
-    batch = _BATCH_MARKET_HOURS if in_market else _BATCH_OFF_HOURS
-
-    in_db = _list_in_db_sids(db_path)
-    universe = _list_universe_sids(db_path) or default_universe
-    missing = [s for s in universe if s not in set(in_db)]
-
-    # 預估本輪總量
-    phase_a_targets = []
-    for sid in in_db:
-        hwm = storage.get_hwm(f"daily_price/{sid}")
-        if hwm and hwm.isoformat() < today:
-            phase_a_targets.append(sid)
-    phase_a_batch = phase_a_targets[:batch]
-    phase_b_batch = missing[:batch]
-    total = len(phase_a_batch) + len(phase_b_batch)
-
-    if total == 0:
-        return
-
-    scope = f"自動 (盤{'中' if in_market else '後'} batch={batch}): A={len(phase_a_batch)} B={len(phase_b_batch)}"
-    job_id = create_job("auto", scope, "varies", total, db_path)
-
     done = failed = 0
     try:
-        for sid in phase_a_batch:
+        logger.info(f"[auto_sync] 夜間增量同步開始：{len(in_db)} 支")
+        for sid in in_db:
             if is_cancelled(job_id, db_path):
                 break
             hwm = storage.get_hwm(f"daily_price/{sid}")
-            start = (hwm + timedelta(days=1)).isoformat() if hwm else "2015-01-01"
-            update_progress(job_id, done=done, failed=failed, current_sid=sid, db_path=db_path)
+            if hwm and (date.today() - hwm).days <= 3:
+                done += 1
+                update_progress(job_id, done=done, failed=failed,
+                                current_sid=sid, db_path=db_path)
+                continue
+            update_progress(job_id, done=done, failed=failed,
+                            current_sid=sid, db_path=db_path)
+            start = history_start
+            if hwm:
+                hwm_next = (hwm + timedelta(days=1)).isoformat()
+                if hwm_next > start:
+                    start = hwm_next
+            if start > today:
+                done += 1
+                continue
             ok = _sync_one(sid, storage, provider, checker, start, today)
-            if ok: done += 1
-            else: failed += 1
+            if ok:
+                done += 1
+            else:
+                failed += 1
             time.sleep(_SLEEP_PER_REQ)
 
-        for sid in phase_b_batch:
-            if is_cancelled(job_id, db_path):
-                break
-            update_progress(job_id, done=done, failed=failed, current_sid=sid, db_path=db_path)
-            ok = _sync_one(sid, storage, provider, checker, "2015-01-01", today)
-            if ok: done += 1
-            else: failed += 1
-            time.sleep(_SLEEP_PER_REQ)
-
-        update_progress(job_id, done=done, failed=failed, current_sid=None, db_path=db_path)
         finish_job(job_id, "done", db_path=db_path)
-        logger.info(f"[auto_sync] 完成輪：{done}/{total}（失敗 {failed}）")
+        logger.info(f"[auto_sync] 夜間同步完成 {done}/{len(in_db)}（失敗 {failed}）")
     except Exception as e:
         finish_job(job_id, "failed", error_msg=str(e)[:500], db_path=db_path)
-        logger.warning(f"[auto_sync] 輪異常: {e}")
+        logger.error(f"[auto_sync] 夜間同步異常: {e}")
+    finally:
+        _JOB_LOCK.release()
+
+    # 掃描 + 告警（sync 完後接著跑）
+    cfg = sync_config.load()
+    if not cfg.get("run_scan_after_sync", True):
+        return
+    try:
+        from twquant.data.daily_scan_worker import run_daily_scan
+        from twquant.data.alert_worker import evaluate_all_rules
+        stats = run_daily_scan()
+        logger.info(f"[auto_sync] 每日選股完成 {stats}")
+        n = evaluate_all_rules()
+        logger.info(f"[auto_sync] 告警評估完成 觸發 {n} 筆")
+    except Exception as e:
+        logger.warning(f"[auto_sync] 掃描/告警失敗（非致命）: {e}")
 
 
-def run_manual_job(db_path: str, target_sids: list[str], start_date: str,
-                   scope_desc: str = "manual", job_type: str = "manual") -> int:
-    """背景啟動指定範圍抓取，回傳 job_id（可用於 UI 追蹤）
+# ─── UI 觸發任務（fire-and-forget，回傳 job_id） ───────────────────────────
 
-    用於 onboarding 啟動與頁 01「手動補抓」按鈕。
-    """
+def run_manual_job(
+    db_path: str,
+    target_sids: list[str],
+    start_date: str,
+    scope_desc: str = "manual",
+    job_type: str = "manual",
+) -> int:
+    """背景啟動指定範圍抓取，回傳 job_id 供進度條追蹤"""
     from twquant.data.storage import SQLiteStorage
     from twquant.data.providers.finmind import FinMindProvider
     from twquant.data.sanity import TWSEDataSanityChecker
     from twquant.dashboard.config import get_finmind_token
+    from twquant.data.sync_config import get_history_start
 
     storage = SQLiteStorage(db_path)
     provider = FinMindProvider(token=get_finmind_token() or "")
     checker = TWSEDataSanityChecker()
+    history_start = get_history_start()
     today = date.today().isoformat()
-    total = len(target_sids)
-    job_id = create_job(job_type, scope_desc, start_date, total, db_path)
+    job_id = create_job(job_type, scope_desc, start_date, len(target_sids), db_path)
 
     def _runner():
+        if not _JOB_LOCK.acquire(blocking=True, timeout=10):
+            finish_job(job_id, "failed", error_msg="另一個同步任務正在執行，請稍後再試",
+                       db_path=db_path)
+            return
         done = failed = 0
         try:
             for sid in target_sids:
                 if is_cancelled(job_id, db_path):
-                    return  # 已被取消
+                    return
                 hwm = storage.get_hwm(f"daily_price/{sid}")
-                # 已近 3 天內 → 跳過
                 if hwm and (date.today() - hwm).days <= 3:
                     done += 1
                     update_progress(job_id, done=done, failed=failed,
@@ -168,63 +199,108 @@ def run_manual_job(db_path: str, target_sids: list[str], start_date: str,
                     continue
                 update_progress(job_id, done=done, failed=failed,
                                 current_sid=sid, db_path=db_path)
-                start = start_date
+                # 起始日：取 max(history_start, start_date, hwm+1)
+                effective_start = max(history_start, start_date)
                 if hwm:
-                    s2 = (hwm + timedelta(days=1)).isoformat()
-                    if s2 > start_date:
-                        start = s2
-                ok = _sync_one(sid, storage, provider, checker, start, today)
-                if ok: done += 1
-                else: failed += 1
+                    hwm_next = (hwm + timedelta(days=1)).isoformat()
+                    if hwm_next > effective_start:
+                        effective_start = hwm_next
+                if effective_start > today:
+                    done += 1
+                    continue
+                ok = _sync_one(sid, storage, provider, checker, effective_start, today)
+                if ok:
+                    done += 1
+                else:
+                    failed += 1
                 time.sleep(_SLEEP_PER_REQ)
             update_progress(job_id, done=done, failed=failed,
                             current_sid=None, db_path=db_path)
             finish_job(job_id, "done", db_path=db_path)
         except Exception as e:
             finish_job(job_id, "failed", error_msg=str(e)[:500], db_path=db_path)
+        finally:
+            _JOB_LOCK.release()
 
-    threading.Thread(target=_runner, daemon=True, name=f"twquant-job-{job_id}").start()
+    threading.Thread(target=_runner, daemon=True,
+                     name=f"twquant-job-{job_id}").start()
     return job_id
 
 
-def _worker(db_path: str, default_universe: list[str]) -> None:
+def run_catchup_job(db_path: str) -> int:
+    """補齊全部到今日：_universe 所有股票從 HWM 補到今天（長時間離線後使用）"""
+    from twquant.data.sync_config import get_history_start
+    sids = _list_universe_sids(db_path) or _list_in_db_sids(db_path)
+    if not sids:
+        sids = []
+    history_start = get_history_start()
+    return run_manual_job(
+        db_path, sids, history_start,
+        scope_desc=f"補齊全部 {len(sids)} 支",
+        job_type="catchup",
+    )
+
+
+# ─── 排程執行緒 ────────────────────────────────────────────────────────────
+
+def _worker(db_path: str) -> None:
+    """每分鐘檢查是否到達 nightly_time；到了且是交易日就啟動夜間任務"""
+    from twquant.data import sync_config
+    last_run_date: date | None = None
     while True:
         try:
-            _sync_once(db_path, default_universe)
+            now = datetime.now(timezone(timedelta(hours=8)))
+            target_h, target_m = sync_config.get_nightly_time()
+            if (
+                sync_config.is_enabled()
+                and _is_trading_day()
+                and now.hour == target_h
+                and now.minute == target_m
+                and (last_run_date is None or last_run_date < now.date())
+            ):
+                last_run_date = now.date()
+                threading.Thread(
+                    target=_run_nightly, args=(db_path,),
+                    daemon=True, name="twquant-nightly",
+                ).start()
         except Exception as e:
-            logger.warning(f"[auto_sync] 輪外異常: {e}")
-        interval = _INTERVAL_MARKET if _is_market_hours() else _INTERVAL_OFF
-        time.sleep(interval)
+            logger.warning(f"[auto_sync] 排程輪外異常: {e}")
+        time.sleep(60)
 
 
-def ensure_running(db_path: str, default_universe: list[str]) -> None:
-    """確保背景同步執行緒已啟動（冪等）"""
+def ensure_running(db_path: str, default_universe: list[str] | None = None) -> None:
+    """確保背景排程執行緒已啟動（冪等）。default_universe 保留供相容，不再使用。"""
     global _thread
     with _lock:
         if _thread is None or not _thread.is_alive():
+            _ensure_universe(db_path)
             _thread = threading.Thread(
-                target=_worker, args=(db_path, default_universe),
-                daemon=True, name="twquant-auto-sync",
+                target=_worker, args=(db_path,),
+                daemon=True, name="twquant-nightly-scheduler",
             )
             _thread.start()
-            logger.info("[auto_sync] 智能背景同步啟動（盤中 5min / 盤後 60min）")
+            logger.info("[auto_sync] 夜間排程啟動（每交易日 nightly_time 自動增量同步）")
 
+
+# ─── UI 狀態查詢 ───────────────────────────────────────────────────────────
 
 def last_sync_info(db_path: str, stock_ids: list[str] | None = None) -> dict:
-    """同步狀態摘要（給 sidebar widget 用）"""
+    """同步狀態摘要（sidebar widget 與頁 01 使用）"""
     from twquant.data.storage import SQLiteStorage
+    from twquant.data import sync_config
     storage = SQLiteStorage(db_path)
-    all_syms = storage.list_symbols()
-    in_db = [s.replace("daily_price/", "") for s in all_syms if s.startswith("daily_price/")]
+    in_db = [s.replace("daily_price/", "") for s in storage.list_symbols()
+             if s.startswith("daily_price/")]
     today = date.today()
-    up_to_date = 0
-    for sid in in_db:
-        hwm = storage.get_hwm(f"daily_price/{sid}")
-        if hwm and (today - hwm).days <= 3:
-            up_to_date += 1
+    up_to_date = sum(
+        1 for sid in in_db
+        if (hwm := storage.get_hwm(f"daily_price/{sid}")) and (today - hwm).days <= 3
+    )
+    h, m = sync_config.get_nightly_time()
     return {
         "total": len(in_db),
         "up_to_date": up_to_date,
-        "is_market_hours": _is_market_hours(),
+        "auto_sync_enabled": sync_config.is_enabled(),
+        "nightly_time": f"{h:02d}:{m:02d}",
         "thread_alive": _thread is not None and _thread.is_alive(),
     }

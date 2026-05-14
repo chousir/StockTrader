@@ -158,21 +158,22 @@ def _render_step_data() -> None:
         "範圍",
         options=["⚡ 快速入門", "🌐 完整", "⚙️ 自訂"],
         captions=[
-            f"{n_quick} 支精選宇宙 — {_est_minutes(n_quick)}（推薦首次體驗）",
-            f"全市場 {n_full} 支 — {_est_minutes(n_full)}",
+            f"{n_quick} 支精選宇宙 — {_est_minutes(n_quick)}",
+            f"全市場 {n_full} 支 — {_est_minutes(n_full)}（推薦，盤後排程每日自動補齊）",
             "多選板塊 + 自選代號 — 視範圍而定",
         ],
-        index=0,
+        index=1,
         label_visibility="collapsed",
     )
 
     custom_sectors: list[str] = []
     custom_codes = ""
     if mode == "⚙️ 自訂":
+        avail_sectors = list_sectors()
+        saved_default = st.session_state.get("onboarding_custom_sectors", ["半導體業", "電子工業"])
+        safe_default = [s for s in saved_default if s in avail_sectors]
         custom_sectors = st.multiselect(
-            "產業（多選）", list_sectors(),
-            default=st.session_state.get("onboarding_custom_sectors",
-                                         ["半導體業", "電子工業"]),
+            "產業（多選）", avail_sectors, default=safe_default,
         )
         st.session_state.onboarding_custom_sectors = custom_sectors
         custom_codes = st.text_area(
@@ -186,9 +187,9 @@ def _render_step_data() -> None:
     # ── 📅 起始日 ──
     start_date = st.date_input(
         "📅 歷史資料起始日",
-        value=pd.Timestamp(st.session_state.get("onboarding_start_date", "2023-01-01")),
+        value=pd.Timestamp(st.session_state.get("onboarding_start_date", "2020-01-01")),
         min_value=pd.Timestamp("2000-01-01"),
-        help="建議至少 3 年以上，回測才有統計意義；範圍越大抓取時間越長",
+        help="預設 2020-01-01（約 5 年，回測統計意義足夠）；2020 前的缺失不自動補抓",
     )
     st.session_state.onboarding_start_date = str(start_date)
 
@@ -276,12 +277,21 @@ def _persist_token(token: str) -> None:
 
 
 def _save_onboarding_config() -> None:
+    start_date = st.session_state.get("onboarding_start_date", "2020-01-01")
     config = {
         "broker_discount": st.session_state.get("onboarding_broker_discount", 0.6),
         "init_cash": st.session_state.get("onboarding_init_cash", 1_000_000),
         "benchmark": st.session_state.get("onboarding_benchmark", "0050"),
         "finmind_api_token": st.session_state.get("onboarding_api_token", ""),
-        "history_start_date": st.session_state.get("onboarding_start_date", "2023-01-01"),
+        "history_start_date": start_date,
     }
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 同步 history_start 到 sync_config
+    try:
+        from twquant.data import sync_config
+        cfg = sync_config.load()
+        cfg["history_start"] = start_date
+        sync_config.save(cfg)
+    except Exception:
+        pass

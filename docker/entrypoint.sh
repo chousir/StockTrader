@@ -32,12 +32,14 @@ PY
 fi
 
 # 3) 啟動 cron daemon
-if [ "${ENABLE_CRON:-true}" = "true" ]; then
-    echo "[entrypoint] 啟動 cron — 每個交易日 14:30 自動同步 + 策略掃描 + 告警評估"
+# 預設停用（ENABLE_CRON=false）：資料同步改由 app 內部排程（頁 01 同步中心可設定時間）
+# 若仍想用 14:30 cron，在 .env 加 ENABLE_CRON=true（與 app 排程二擇一，避免重複抓）
+if [ "${ENABLE_CRON:-false}" = "true" ]; then
+    echo "[entrypoint] 啟動 cron — 每個交易日 14:30 同步 + 掃描 + 告警"
     service cron start || cron
     touch /var/log/twquant-cron.log
 else
-    echo "[entrypoint] ENABLE_CRON=false — 跳過 cron"
+    echo "[entrypoint] ENABLE_CRON=false — 資料同步由 app 排程（頁01同步中心）接管"
 fi
 
 # 4) 啟動 Streamlit
