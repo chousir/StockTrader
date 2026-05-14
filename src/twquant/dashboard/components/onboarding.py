@@ -144,14 +144,22 @@ def _render_step_data() -> None:
             st.warning(f"⚠️ {st.session_state['_onboarding_token_msg']}（仍可用匿名模式繼續）")
     st.session_state.onboarding_api_token = api_token
 
-    # ── 📦 範圍 ──
+    # ── 📦 範圍（動態計算各模式股數 + 時間預估） ──
     st.subheader("📦 抓取範圍")
+    n_quick = len(_compute_target_sids("⚡ 快速入門", [], "")[0])
+    n_full = len(_compute_target_sids("🌐 完整", [], "")[0])
+
+    def _est_minutes(n: int) -> str:
+        """每支約 0.7-1.5 秒（FinMind rate limit + sanity + DB upsert）"""
+        lo, hi = max(1, int(n * 0.7 / 60)), max(1, int(n * 1.5 / 60))
+        return f"約 {lo} 分鐘" if lo == hi else f"約 {lo}-{hi} 分鐘"
+
     mode = st.radio(
         "範圍",
         options=["⚡ 快速入門", "🌐 完整", "⚙️ 自訂"],
         captions=[
-            "49 支精選宇宙 — 約 1-2 分鐘（推薦首次體驗）",
-            "全市場 3000+ 支 — 約 1.5-2 小時",
+            f"{n_quick} 支精選宇宙 — {_est_minutes(n_quick)}（推薦首次體驗）",
+            f"全市場 {n_full} 支 — {_est_minutes(n_full)}",
             "多選板塊 + 自選代號 — 視範圍而定",
         ],
         index=0,
