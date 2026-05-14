@@ -128,13 +128,6 @@ def _system_health() -> dict:
 
 def main():
     from twquant.data.watchlist import Watchlist
-    try:
-        from twquant.data.sync_jobs import latest_running_job
-        j = latest_running_job(DB_PATH)
-        if j:
-            st.warning(f"📡 抓取進行中（{j['job_type']}）：{j['done']}/{j['total']} 支 — 目前 {j.get('current_sid') or '初始化'}　其他功能可正常使用")
-            st.progress(j["done"] / max(j["total"], 1))
-    except Exception: pass
 
     status = _market_status()
     if status:
