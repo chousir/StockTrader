@@ -134,6 +134,9 @@ make run
 ## 🐳 Docker 部署
 
 ```bash
+# Build image
+make docker-build
+
 # 一鍵啟動
 make docker-up
 
